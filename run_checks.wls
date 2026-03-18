@@ -9,17 +9,20 @@
      1. Kawasaki ring with Metropolis          --> PASS
      2. Kawasaki ring, always accept           --> FAIL
      3. Kawasaki ring, wrong acceptance sign   --> FAIL
+
+   For each example, two PNG plots are exported to the same
+   directory as this script:
+     {SystemName}_frequencies.png       simulated vs Boltzmann bar chart
+     {SystemName}_transition_matrix.png numerical T[from,to] heatmap
    ================================================================ *)
 
 scriptDir = DirectoryName[$InputFileName];
-
-(* Load core library into global context -- no package prefix needed *)
 Get[scriptDir <> "dbc_core.wl"];
 
 (* ================================================================
    EXAMPLE 1: Kawasaki ring + Metropolis  [should PASS]
    ================================================================ *)
-Print["\n\n", StringRepeat["#", 62]];
+Print["\n", StringRepeat["#", 62]];
 Print["EXAMPLE 1: Kawasaki ring + Metropolis  (expected: PASS)"];
 Print[StringRepeat["#", 62]];
 
@@ -27,21 +30,23 @@ Get[scriptDir <> "examples/ring_kawasaki.wl"];
 
 result1 = RunFullCheck[
   allStates$rk,
-  KawasakiSym$rk,   (* symbolic: uses MetropolisProb, keeps beta symbolic *)
-  KawasakiNum$rk,   (* numeric:  uses N[If[dE<=0,1,Exp[-dE]]], beta in dE *)
+  KawasakiSym$rk,
+  KawasakiNum$rk,
   symEnergy$rk,
   numEnergy$rk,
-  "SystemName"  -> "Ring L=3, 1 particle -- Kawasaki + Metropolis",
-  "MaxBitDepth" -> 10,
-  "TimeLimit"   -> 60.,
-  "NSteps"      -> 80000,
-  "Verbose"     -> True
+  "SystemName"    -> "Kawasaki_ring_PASS",
+  "MaxBitDepth"   -> 10,
+  "TimeLimit"     -> 60.,
+  "NSteps"        -> 80000,
+  "Verbose"       -> True,
+  "ExportPlots"   -> True,
+  "PlotDirectory" -> scriptDir
 ];
 
 (* ================================================================
    EXAMPLE 2: Always accept  [should FAIL]
    ================================================================ *)
-Print["\n\n", StringRepeat["#", 62]];
+Print["\n", StringRepeat["#", 62]];
 Print["EXAMPLE 2: Always accept, no Metropolis  (expected: FAIL)"];
 Print[StringRepeat["#", 62]];
 
@@ -53,17 +58,19 @@ result2 = RunFullCheck[
   AlwaysAcceptNum,
   symEnergy$aa,
   numEnergy$aa,
-  "SystemName"  -> "Ring L=3, 1 particle -- always accept",
-  "MaxBitDepth" -> 10,
-  "TimeLimit"   -> 60.,
-  "NSteps"      -> 80000,
-  "Verbose"     -> False
+  "SystemName"    -> "Always_accept_FAIL",
+  "MaxBitDepth"   -> 10,
+  "TimeLimit"     -> 60.,
+  "NSteps"        -> 80000,
+  "Verbose"       -> False,
+  "ExportPlots"   -> True,
+  "PlotDirectory" -> scriptDir
 ];
 
 (* ================================================================
    EXAMPLE 3: Wrong acceptance sign  [should FAIL]
    ================================================================ *)
-Print["\n\n", StringRepeat["#", 62]];
+Print["\n", StringRepeat["#", 62]];
 Print["EXAMPLE 3: Wrong acceptance sign  (expected: FAIL)"];
 Print[StringRepeat["#", 62]];
 
@@ -75,12 +82,15 @@ result3 = RunFullCheck[
   WrongSignNum,
   symEnergy$ws,
   numEnergy$ws,
-  "SystemName"  -> "Ring L=3, 1 particle -- wrong acceptance sign",
-  "MaxBitDepth" -> 10,
-  "TimeLimit"   -> 60.,
-  "NSteps"      -> 80000,
-  "Verbose"     -> False
+  "SystemName"    -> "Wrong_sign_FAIL",
+  "MaxBitDepth"   -> 10,
+  "TimeLimit"     -> 60.,
+  "NSteps"        -> 80000,
+  "Verbose"       -> False,
+  "ExportPlots"   -> True,
+  "PlotDirectory" -> scriptDir
 ];
 
 Print["\nAll checks complete."];
+Print["Plots saved in: ", scriptDir];
 Exit[0]
