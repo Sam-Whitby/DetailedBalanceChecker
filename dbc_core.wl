@@ -1,140 +1,153 @@
 (* ================================================================
-   DetailedBalanceChecker - Core Library
+   DetailedBalanceChecker  -  Core Library
    ================================================================
+   Load with:  Get["path/to/dbc_core.wl"]
 
-   Checks whether an MCMC algorithm satisfies detailed balance
-   via exhaustive enumeration of all possible execution paths.
+   Entry point:
+     RunFullCheck[allStates, symAlg, numAlg, symEnergy, numEnergy, opts]
 
-   ALGORITHM INTERFACE
-   -------------------
-   Provide TWO algorithm functions with the same signature:
+   See README.md for the full interface description.
+   ================================================================ *)
 
-     symAlg[state_, readBit_]   -- for the symbolic check.
-                                   Energy differences are symbolic.
-                                   Use MetropolisProb[dE] for acceptance.
 
-     numAlg[state_, readBit_]   -- for the numerical MCMC check.
-                                   All quantities fully numeric.
-                                   dE must already include beta.
-
-   Each returns EITHER:
-     (a) A single new state     (all randomness from readBit)
-     (b) {{p1,s1},{p2,s2},...}  explicit probability-weighted outcomes
-
-   ENERGY INTERFACE
-   ----------------
-     symEnergy[state]  bare energy E(s), symbolic in couplings, NO beta.
-                       The library inserts beta via Exp[-beta*symEnergy[s]].
-
-     numEnergy[state]  fully numeric, WITH beta folded in.
-                       Boltzmann weights computed as Exp[-numEnergy[s]].
-
-   HELPER
-   ------
-     MetropolisProb[deltaE]  standard Metropolis acceptance probability,
-                             symbolic Piecewise in beta and deltaE.
-
+(* ================================================================
+   SECTION 1 – PRIMITIVES
    ================================================================ *)
 
 (* ----------------------------------------------------------------
    MetropolisProb
+   Standard Metropolis acceptance as a symbolic Piecewise.
+   deltaE is the BARE energy difference (no beta); the global
+   symbol \[Beta] appears in the result and stays unassigned during
+   the symbolic check.
    ---------------------------------------------------------------- *)
 MetropolisProb[deltaE_] :=
-  Piecewise[{{1, deltaE <= 0}, {Exp[-\[Beta] * deltaE], deltaE > 0}}]
+  Piecewise[{{1, deltaE <= 0}, {Exp[-\[Beta] deltaE], deltaE > 0}}]
 
 (* ----------------------------------------------------------------
    RunWithBits
-   Run alg[state, readBit] with a fixed bit sequence.
-   Returns {outcomes, nBitsConsumed} or $OutOfBits.
+   Run alg[state, readBit] against a fixed bit list.
+   readBit[] returns bits[[1]], bits[[2]], … and throws $OutOfBits
+   if the list is exhausted.
+   Returns  {outcomes, nBitsConsumed}  or  $OutOfBits.
+   outcomes = {{p1,s1},{p2,s2},…}
    ---------------------------------------------------------------- *)
 RunWithBits[alg_, state_, bits_List] := Module[
   {pos = 0, readBit, raw},
   readBit[] := (
     pos++;
-    If[pos > Length[bits],
-      Throw[$OutOfBits, $dbc$outOfBits],
-      bits[[pos]]
-    ]
+    If[pos > Length[bits], Throw[$OutOfBits, $dbc$tag], bits[[pos]]]
   );
-  raw = Catch[alg[state, readBit], $dbc$outOfBits, ($OutOfBits &)];
-  If[raw === $OutOfBits,
-    $OutOfBits,
+  raw = Catch[alg[state, readBit], $dbc$tag, ($OutOfBits &)];
+  If[raw === $OutOfBits, $OutOfBits,
     {If[ListQ[raw] && Length[raw] > 0 && ListQ[raw[[1]]],
-       raw, {{1, raw}}],
-     pos}
+       raw, {{1, raw}}], pos}
   ]
 ]
 
+
+(* ================================================================
+   SECTION 2 – TREE BUILDING
+   ================================================================ *)
+
 (* ----------------------------------------------------------------
-   BuildTransitionMatrix
+   BuildTreeData
    BFS over bit sequences for every starting state.
-   Returns Association {fromState, toState} -> symbolicProbability.
+   Returns  Association[ state -> { {bits, outcomes}, … } ]
+   where outcomes = {{p1,s1},…}  (raw leaves of the decision tree).
    ---------------------------------------------------------------- *)
-Options[BuildTransitionMatrix] = {
+Options[BuildTreeData] = {
   "MaxBitDepth" -> 20,
   "TimeLimit"   -> 60.,
   "Verbose"     -> True
 }
 
-BuildTransitionMatrix[allStates_List, alg_, OptionsPattern[]] := Module[
+BuildTreeData[allStates_List, alg_, OptionsPattern[]] := Module[
   {maxDepth = OptionValue["MaxBitDepth"],
-   tlim     = OptionValue["TimeLimit"],
+   tlim     = N @ OptionValue["TimeLimit"],
    verbose  = OptionValue["Verbose"],
-   stateSet, matrix, queue, bits, res, outcomes, k, t0, timedOut},
-
-  stateSet = Association[# -> True & /@ allStates];
-  matrix   = <||>;
+   result   = <||>,
+   queue, bits, res, outcomes, k, t0, timedOut, leaves},
 
   Do[
     If[verbose, Print["  Tree for state: ", s]];
     queue    = {{}};
+    leaves   = {};
     t0       = AbsoluteTime[];
     timedOut = False;
 
     While[queue =!= {} && !timedOut,
       If[AbsoluteTime[] - t0 > tlim, timedOut = True; Break[]];
-      bits  = First[queue];
-      queue = Rest[queue];
+      bits  = First[queue]; queue = Rest[queue];
       res   = RunWithBits[alg, s, bits];
-
       Which[
         res === $OutOfBits && Length[bits] < maxDepth,
           queue = Join[queue, {Append[bits, 0], Append[bits, 1]}],
-
         res === $OutOfBits,
           Print["  WARNING: MaxBitDepth=", maxDepth,
-                " reached for state ", s, " on prefix ", bits,
+                " reached for state ", s, " at prefix ", bits,
                 " -- path excluded (algorithm may not halt on this input)."],
-
         True,
           {outcomes, k} = res;
-          Do[
-            With[{p = out[[1]], ns = out[[2]]},
-              If[!KeyExistsQ[stateSet, ns],
-                Print["  WARNING: Algorithm returned invalid state ", ns,
-                      " from ", s],
-                matrix[{s, ns}] =
-                  Lookup[matrix, Key[{s, ns}], 0] + p * (1/2)^k
-              ]
-            ],
-            {out, outcomes}
-          ]
+          AppendTo[leaves, {bits, outcomes}]
       ]
     ];
 
-    If[timedOut, Print["  WARNING: Time limit reached for state ", s]],
+    If[timedOut, Print["  WARNING: Time limit reached for state ", s]];
+    result[s] = leaves,
     {s, allStates}
   ];
+  result
+]
 
+(* ----------------------------------------------------------------
+   TreeDataToMatrix
+   Derive the transition matrix from raw tree leaves.
+   Returns  Association[ {from,to} -> symbolicProbability ]
+   ---------------------------------------------------------------- *)
+TreeDataToMatrix[allStates_List, treeData_Association] := Module[
+  {stateSet = Association[# -> True & /@ allStates], matrix = <||>},
+  Do[
+    Do[
+      With[{bits = leaf[[1]], outcomes = leaf[[2]]},
+        Do[
+          With[{p = out[[1]], ns = out[[2]]},
+            If[KeyExistsQ[stateSet, ns],
+              matrix[{s, ns}] =
+                Lookup[matrix, Key[{s, ns}], 0] + p * (1/2)^Length[bits],
+              Print["  WARNING: Invalid state ", ns, " returned from ", s]
+            ]
+          ],
+          {out, outcomes}
+        ]
+      ],
+      {leaf, treeData[s]}
+    ],
+    {s, allStates}
+  ];
   matrix
 ]
+
+(* BuildTransitionMatrix kept for API compatibility *)
+Options[BuildTransitionMatrix] = Options[BuildTreeData]
+BuildTransitionMatrix[allStates_List, alg_, opts : OptionsPattern[]] :=
+  TreeDataToMatrix[allStates,
+    BuildTreeData[allStates, alg,
+      "MaxBitDepth" -> OptionValue["MaxBitDepth"],
+      "TimeLimit"   -> OptionValue["TimeLimit"],
+      "Verbose"     -> OptionValue["Verbose"]]]
+
+
+(* ================================================================
+   SECTION 3 – CHECKERS
+   ================================================================ *)
 
 (* ----------------------------------------------------------------
    CheckDetailedBalance
    Verifies T(i->j)*pi(i) = T(j->i)*pi(j) for all i<j pairs,
    where pi(s) = Exp[-beta * symEnergy[s]].
-   Uses FullSimplify with beta > 0 to resolve Piecewise expressions.
-   Returns list of violations; empty = PASS.
+   Uses FullSimplify with beta>0 to resolve Piecewise expressions.
+   Returns list of violation records; empty list = PASS.
    ---------------------------------------------------------------- *)
 CheckDetailedBalance[matrix_Association, allStates_List, symEnergy_] := Module[
   {n = Length[allStates], violations = {}, si, sj, tij, tji, res},
@@ -157,8 +170,9 @@ CheckDetailedBalance[matrix_Association, allStates_List, symEnergy_] := Module[
 
 (* ----------------------------------------------------------------
    RunNumericalMCMC
-   Run numAlg with true random bits.
-   Returns Association state -> visitCount.
+   Run numAlg with true random bits; sample outcomes weighted by
+   their returned probabilities.
+   Returns  Association[ state -> visitCount ]
    ---------------------------------------------------------------- *)
 Options[RunNumericalMCMC] = {
   "NSteps"     -> 100000,
@@ -173,39 +187,28 @@ RunNumericalMCMC[allStates_List, numAlg_, OptionsPattern[]] := Module[
   state  = RandomChoice[allStates];
   counts = AssociationThread[allStates -> 0];
 
-  mcmcStep[] := Module[
-    {liveRb, raw, outs, u, cumP, ns},
+  mcmcStep[] := Module[{liveRb, raw, outs, u, cumP, ns},
     liveRb[] := RandomInteger[1];
     raw  = numAlg[state, liveRb];
     outs = If[ListQ[raw] && Length[raw] > 0 && ListQ[raw[[1]]],
                raw, {{1, raw}}];
-    u    = RandomReal[];
-    cumP = 0.;
-    ns   = outs[[-1, 2]];
-    Do[
-      cumP += N[out[[1]]];
-      If[u < cumP, ns = out[[2]]; Break[]],
-      {out, outs}
-    ];
+    u = RandomReal[]; cumP = 0.; ns = outs[[-1, 2]];
+    Do[cumP += N[out[[1]]]; If[u < cumP, ns = out[[2]]; Break[]], {out, outs}];
     state = ns
   ];
 
   Do[mcmcStep[], {nWarmup}];
-  Do[
-    mcmcStep[];
-    If[KeyExistsQ[counts, state],
-      counts[state]++,
-      Print["  WARNING: numerical MCMC produced unexpected state ", state]
-    ],
-    {nSteps - nWarmup}
-  ];
-
+  Do[mcmcStep[];
+     If[KeyExistsQ[counts, state], counts[state]++,
+        Print["  WARNING: unexpected state from numAlg: ", state]],
+     {nSteps - nWarmup}];
   counts
 ]
 
 (* ----------------------------------------------------------------
    BoltzmannWeights
-   Normalised Boltzmann probabilities from numEnergy (includes beta).
+   numEnergy[s] must be fully numeric WITH beta already included.
+   Returns  Association[ state -> normalisedWeight ]
    ---------------------------------------------------------------- *)
 BoltzmannWeights[allStates_List, numEnergy_] := Module[
   {ws, Z},
@@ -214,213 +217,468 @@ BoltzmannWeights[allStates_List, numEnergy_] := Module[
   AssociationThread[allStates -> ws / Z]
 ]
 
+
+(* ================================================================
+   SECTION 4 – VISUALISATION PRIMITIVES
+   ================================================================ *)
+
 (* ----------------------------------------------------------------
-   NumericalTransitionMatrix
-   Build an n x n numeric matrix from numAlg via BFS.
-   Entry [i,j] = probability of going from allStates[[i]] to allStates[[j]].
+   DrawStateTree
+   Render the BFS decision tree for one starting state as a Graph.
+   leaves = { {bits_List, outcomes}, ... }
+   outcomes = {{p1,s1},{p2,s2},...}
+   Green outcome nodes  = algorithm moved to a NEW state.
+   Orange outcome nodes = algorithm stayed in the SAME state.
    ---------------------------------------------------------------- *)
-NumericalTransitionMatrix[allStates_List, numAlg_, opts___] := Module[
-  {n = Length[allStates], mat, matrix},
-  matrix = BuildTransitionMatrix[allStates, numAlg,
-             "Verbose" -> False, opts];
-  Table[
-    N @ Lookup[matrix, Key[{allStates[[i]], allStates[[j]]}], 0],
-    {i, n}, {j, n}]
+
+(* String vertex IDs -- safer than lists as Graph vertex names *)
+$bKey[b_List] := If[b === {}, "root", "b" <> StringJoin[ToString /@ b]]
+$oKey[b_List, i_Integer] := $bKey[b] <> "o" <> ToString[i]
+
+(* Compact probability label *)
+$probLabel[p_] := Which[
+  p === 1 || p === 1.,   Style["p=1", 7, Darker[Green,0.3]],
+  p === 0 || p === 0.,   Style["p=0", 7, Red],
+  NumericQ[p],           Style["p=" <> ToString[NumberForm[N[p],{3,2}]], 7, GrayLevel[0.3]],
+  True,                  Style[TraditionalForm[p], 7, GrayLevel[0.2]]
+]
+
+DrawStateTree[startState_, leaves_List] := Module[
+  {leafBits, allPfx, intPfx, leafPfx,
+   bitEdges, outEdges, allEdges,
+   vLabels, eLabels, vStyle, vSize, nLeaves, maxDepth, g},
+
+  If[leaves === {},
+    Return @ Framed[Style["(no paths)", 9, Gray],
+                   FrameStyle -> LightGray, ImageSize -> 140]
+  ];
+
+  leafBits = #[[1]] & /@ leaves;
+  nLeaves  = Length[leafBits];
+  maxDepth = Max[Length /@ leafBits];
+
+  (* All bit-sequence prefixes appearing as nodes *)
+  allPfx = DeleteDuplicates @ Flatten[
+    Table[Take[b, k], {b, leafBits}, {k, 0, Length[b]}], 1];
+  intPfx = DeleteDuplicates @ Flatten[
+    Table[Take[b, k], {b, leafBits}, {k, 0, Length[b]-1}], 1];
+  leafPfx = Complement[allPfx, intPfx];
+
+  (* Edges between bit nodes *)
+  bitEdges = DeleteDuplicates @ Flatten[
+    Table[DirectedEdge[$bKey @ Take[b,k-1], $bKey @ Take[b,k]],
+          {b, leafBits}, {k, 1, Length[b]}], 1];
+
+  (* Edges to outcome nodes *)
+  outEdges = Flatten @ Table[
+    Table[DirectedEdge[$bKey[leaf[[1]]], $oKey[leaf[[1]],i]],
+          {i, Length[leaf[[2]]]}],
+    {leaf, leaves}];
+
+  allEdges = Join[bitEdges, outEdges];
+
+  (* Vertex labels *)
+  vLabels = Flatten @ {
+    $bKey[{}] -> Placed[Style["S=" <> ToString[startState], 9, Bold, White], Center],
+    Table[$bKey[b] -> Placed[Style["?", 8, White], Center],
+          {b, Complement[intPfx, {{}}]}],
+    Table[$bKey[b] -> Placed[Style["\[DownArrow]", 9, GrayLevel[0.35]], Center],
+          {b, leafPfx}],
+    Flatten @ Table[
+      With[{bits = leaf[[1]], outs = leaf[[2]]},
+        Table[$oKey[bits,i] -> Placed[
+          Column[{
+            Style["\[RightArrow]" <> ToString[outs[[i,2]]], 8,
+                  If[outs[[i,2]] =!= startState, Darker[Green,0.2], Darker[Orange,0.15]]],
+            $probLabel[outs[[i,1]]]
+          }, Alignment -> Center, Spacings -> 0.1], Center],
+        {i, Length[outs]}]
+      ],
+      {leaf, leaves}]
+  };
+
+  (* Edge labels: 0 / 1 on bit edges *)
+  eLabels = DeleteDuplicates @ Flatten[
+    Table[DirectedEdge[$bKey @ Take[b,k-1], $bKey @ Take[b,k]] ->
+            Placed[Style[ToString[b[[k]]], 9, Bold, RGBColor[0.2,0.3,0.7]], Automatic],
+          {b, leafBits}, {k, 1, Length[b]}], 1];
+
+  (* Vertex colours *)
+  vStyle = Flatten @ {
+    $bKey[{}] -> RGBColor[0.22,0.42,0.70],
+    Table[$bKey[b] -> GrayLevel[0.52], {b, Complement[intPfx, {{}}]}],
+    Table[$bKey[b] -> GrayLevel[0.70], {b, leafPfx}],
+    Flatten @ Table[
+      With[{bits = leaf[[1]], outs = leaf[[2]]},
+        Table[$oKey[bits,i] ->
+              If[outs[[i,2]] =!= startState,
+                 RGBColor[0.25,0.68,0.38],
+                 RGBColor[0.88,0.58,0.20]],
+              {i, Length[outs]}]],
+      {leaf, leaves}]
+  };
+
+  (* Vertex sizes *)
+  vSize = Flatten @ {
+    $bKey[{}] -> 0.65,
+    Table[$bKey[b] -> 0.40, {b, Complement[intPfx, {{}}]}],
+    Table[$bKey[b] -> 0.35, {b, leafPfx}],
+    Flatten @ Table[Table[$oKey[leaf[[1]],i] -> 0.60, {i, Length[leaf[[2]]]}],
+                    {leaf, leaves}]
+  };
+
+  Graph[
+    allEdges,
+    VertexLabels -> vLabels,
+    EdgeLabels   -> eLabels,
+    VertexStyle  -> vStyle,
+    VertexSize   -> vSize,
+    GraphLayout  -> {"LayeredDigraphEmbedding",
+                     "RootVertex"   -> $bKey[{}],
+                     "Orientation"  -> Top},
+    ImageSize    -> {Max[220, 140*nLeaves], Max[180, 95*(maxDepth+2)]},
+    Background   -> GrayLevel[0.97],
+    PlotLabel    -> Style["State " <> ToString[startState], 10, Bold,
+                          GrayLevel[0.3]]
+  ]
 ]
 
 (* ----------------------------------------------------------------
-   ExportPlots
-   Generate and export two PNG files for a given run:
-     1. Frequency bar chart   (simulated vs Boltzmann per state)
-     2. Transition matrix heatmap (numerical, from numAlg)
-
-   Arguments:
-     allStates  list of states
-     numAlg     numerical algorithm (for heatmap)
-     simFreq    Association state -> simulated frequency
-     bw         Association state -> Boltzmann probability
-     name       system name string (used in titles and file names)
-     outDir     output directory string (include trailing slash)
+   MakeTransitionGrid
+   Styled Grid showing the symbolic transition matrix.
    ---------------------------------------------------------------- *)
-ExportPlots[allStates_List, numAlg_, simFreq_, bw_,
-            name_String, outDir_String, algOpts___] := Module[
-  {n, labels, safeName, freqData, bwData, freqPlot, numMat, ticks, matPlot, f1, f2},
+MakeTransitionGrid[allStates_List, matrix_Association] := Module[
+  {n = Length[allStates], hdr, rows},
+  hdr = Prepend[
+    Style[ToString[#], Bold, 10, GrayLevel[0.2]] & /@ allStates,
+    Style["T[i\[Rule]j]", 10, Italic, GrayLevel[0.4]]];
+  rows = Table[
+    Prepend[
+      Table[
+        With[{p = Lookup[matrix, Key[{allStates[[i]], allStates[[j]]}], 0]},
+          If[p === 0,
+             Style["0", 9, GrayLevel[0.7]],
+             Style[TraditionalForm @ FullSimplify[p], 9]]],
+        {j, n}],
+      Style[ToString[allStates[[i]]], Bold, 10, GrayLevel[0.2]]],
+    {i, n}];
+  Grid[
+    Prepend[rows, hdr],
+    Frame      -> All,
+    FrameStyle -> GrayLevel[0.82],
+    Background -> {None, None, Flatten @ {
+      Table[{1,j} -> RGBColor[0.84,0.90,1.00], {j,n+1}],
+      Table[{i,1} -> RGBColor[0.84,0.90,1.00], {i,n+1}],
+      Table[{i+1,i+1} -> RGBColor[1.00,0.98,0.84], {i,n}]}},
+    Spacings   -> {2, 1},
+    Alignment  -> Center
+  ]
+]
 
-  n       = Length[allStates];
-  labels  = ToString /@ allStates;
-  safeName = StringReplace[name, {" " -> "_", "/" -> "-",
-                                   "\\" -> "-", "," -> ""}];
+(* ----------------------------------------------------------------
+   MakeDBTable
+   Colour-coded table of detailed-balance pair results.
+   ---------------------------------------------------------------- *)
+MakeDBTable[allStates_List, violations_List] := Module[
+  {n = Length[allStates], pairs, violPairs, hdr, rows},
+  pairs     = Flatten[Table[{allStates[[i]],allStates[[j]]},
+                            {i,n},{j,i+1,n}], 1];
+  violPairs = If[violations === {}, {}, #["pair"] & /@ violations];
+  hdr = Style[#, Bold, 10] & /@
+        {"State i", "State j",
+         "T(i\[Rule]j)\[CenterDot]\[Pi](i)  \[Minus]  T(j\[Rule]i)\[CenterDot]\[Pi](j)",
+         "Result"};
+  rows = Table[
+    With[{pass = !MemberQ[violPairs, pair]},
+      {Style[ToString[pair[[1]]], 10],
+       Style[ToString[pair[[2]]], 10],
+       Style[If[pass, "= 0   (FullSimplify, \[Beta] > 0)",
+                      ToString[TraditionalForm @
+                        First[Select[violations, #["pair"]===pair&],
+                              <|"residual"->"?"|>]["residual"]]],
+             9, If[pass, Darker[Green,0.2], Darker[Red,0.1]]],
+       Style[If[pass, "\[Checkmark] PASS", "\[Times] FAIL"],
+             10, Bold, If[pass, Darker[Green], Red]]}],
+    {pair, pairs}];
+  Grid[
+    Prepend[rows, hdr],
+    Frame      -> All,
+    FrameStyle -> GrayLevel[0.82],
+    Background -> {None, None,
+      Table[{i+1,4} -> If[!MemberQ[violPairs,pairs[[i]]],
+                           RGBColor[0.88,1.00,0.88],
+                           RGBColor[1.00,0.88,0.88]],
+            {i, Length[pairs]}]},
+    Spacings   -> {2, 0.9},
+    Alignment  -> {Left, Center}
+  ]
+]
 
-  (* ---- 1. Frequency comparison bar chart ---- *)
-  freqData = N @ simFreq[#] & /@ allStates;
-  bwData   = N @ bw[#]      & /@ allStates;
-
-  freqPlot = BarChart[
-    (* one group per state, two bars: simulated then Boltzmann *)
-    Table[{freqData[[i]], bwData[[i]]}, {i, n}],
-    ChartLabels -> {
-      Placed[labels, Below],
-      Placed[{"Sim", "Boltz"}, Above]
-    },
-    ChartStyle  -> {Directive[RGBColor[0.2, 0.4, 0.8], Opacity[0.85]],
-                    Directive[RGBColor[0.8, 0.2, 0.2], Opacity[0.85]]},
+(* ----------------------------------------------------------------
+   MakeFrequencyPanel
+   Bar chart of simulated vs Boltzmann frequencies + KL verdict.
+   ---------------------------------------------------------------- *)
+MakeFrequencyPanel[allStates_List, simFreq_Association,
+                   bw_Association, kl_Real] := Module[
+  {labels, simD, bwD, pass, chart, verdict},
+  labels = ToString /@ allStates;
+  simD   = N @ simFreq[#] & /@ allStates;
+  bwD    = N @ bw[#]      & /@ allStates;
+  pass   = kl < 0.02;
+  chart  = BarChart[
+    Table[{simD[[i]], bwD[[i]]}, {i, Length[allStates]}],
+    ChartLabels  -> {Placed[labels, Below],
+                     Placed[{"Simulated", "Boltzmann"}, Above]},
+    ChartStyle   -> {Directive[RGBColor[0.20,0.45,0.80], Opacity[0.85]],
+                     Directive[RGBColor[0.82,0.22,0.18], Opacity[0.85]]},
     ChartLegends -> Placed[{"Simulated", "Boltzmann"}, {Right, Top}],
     AxesLabel    -> {None, "Probability"},
-    PlotLabel    -> Style[name <> "\nSimulated vs Boltzmann frequencies", 13, Bold],
-    ImageSize    -> {600, 400},
-    Background   -> White
-  ];
-
-  (* ---- 2. Numerical transition matrix heatmap ---- *)
-  numMat = NumericalTransitionMatrix[allStates, numAlg, algOpts];
-  ticks  = Table[{i, Rotate[labels[[i]], 0]}, {i, n}];
-
-  matPlot = MatrixPlot[
-    numMat,
-    ColorFunction  -> "SunsetColors",
-    ColorFunctionScaling -> True,
-    FrameTicks     -> {{ticks, None}, {ticks, None}},
-    FrameLabel     -> {Style["From state", 11], Style["To state", 11]},
-    PlotLabel      -> Style[name <> "\nNumerical transition matrix  T[from, to]", 13, Bold],
-    ImageSize      -> {500, 500},
-    Background     -> White,
-    (* Overlay numeric values for small matrices *)
-    Epilog -> If[n <= 8,
-      Flatten @ Table[
-        Text[Style[NumberForm[numMat[[i, j]], {3, 2}], 9, GrayLevel[0.1]],
-             {j, n + 1 - i}],   (* MatrixPlot: x=col, y=n+1-row *)
-        {i, n}, {j, n}],
-      {}]
-  ];
-
-  (* ---- Export ---- *)
-  f1 = outDir <> safeName <> "_frequencies.png";
-  f2 = outDir <> safeName <> "_transition_matrix.png";
-  Export[f1, freqPlot,  "PNG"];
-  Export[f2, matPlot, "PNG"];
-
-  Print["  Plots exported:"];
-  Print["    Frequency chart  -> ", f1];
-  Print["    Transition matrix -> ", f2];
-
-  <|"frequencyPlot" -> freqPlot, "matrixPlot" -> matPlot,
-    "freqFile" -> f1, "matrixFile" -> f2|>
+    PlotLabel    -> Style["Simulated vs Boltzmann state frequencies", 12, Bold],
+    ImageSize    -> {520, 300},
+    Background   -> White];
+  verdict = Style[
+    "KL divergence (sim \[DoubleVerticalBar] Boltzmann) = " <>
+    ToString[NumberForm[kl,{5,4}]] <> "     " <>
+    If[pass, "\[Checkmark] Consistent with Boltzmann",
+             "\[Times] Significant deviation from Boltzmann"],
+    11, Bold, If[pass, Darker[Green], Red]];
+  Column[{chart, Spacer[6], verdict}, Alignment -> Left, Spacings -> 0.3]
 ]
+
+
+(* ================================================================
+   SECTION 5 – REPORT WINDOW
+   ================================================================ *)
+
+(* ----------------------------------------------------------------
+   MakeReportWindow
+   Assembles all results into a Mathematica notebook and opens it.
+   args = Association with keys:
+     name, allStates, treeData, matrix, violations,
+     simFreq, bw, kl, algCode
+   ---------------------------------------------------------------- *)
+MakeReportWindow[args_Association] := Module[
+  {name, allStates, treeData, matrix, violations,
+   simFreq, bw, kl, algCode, pass,
+   badge, trees, matGrid, dbTab, freqPanel, cells, nb},
+
+  name       = args["name"];
+  allStates  = args["allStates"];
+  treeData   = args["treeData"];
+  matrix     = args["matrix"];
+  violations = args["violations"];
+  simFreq    = args["simFreq"];
+  bw         = args["bw"];
+  kl         = args["kl"];
+  algCode    = args["algCode"];
+  pass       = violations === {};
+
+  (* ---- Pass/fail banner ---- *)
+  badge = Panel[
+    Row[{
+      Style[name, 18, Bold, GrayLevel[0.1]],
+      Spacer[25],
+      Style[If[pass,
+               "\[FilledCircle]  DETAILED BALANCE:  PASS",
+               "\[FilledCircle]  DETAILED BALANCE:  FAIL"],
+            17, Bold,
+            If[pass, RGBColor[0.04,0.54,0.04], RGBColor[0.74,0.04,0.04]]]
+    }],
+    Background -> GrayLevel[0.94],
+    FrameMargins -> {{16,16},{12,12}}];
+
+  (* ---- Trees: one per state, side by side ---- *)
+  trees = Table[
+    Framed[
+      Column[{DrawStateTree[s, treeData[s]]}, Alignment -> Center],
+      FrameStyle -> GrayLevel[0.82], RoundingRadius -> 5,
+      Background -> GrayLevel[0.975], FrameMargins -> 8],
+    {s, allStates}];
+
+  matGrid  = MakeTransitionGrid[allStates, matrix];
+  dbTab    = MakeDBTable[allStates, violations];
+  freqPanel = MakeFrequencyPanel[allStates, simFreq, bw, kl];
+
+  (* ---- Notebook cells ---- *)
+  cells = {
+    Cell[BoxData @ ToBoxes @ badge,
+         "Output", CellMargins -> {{8,8},{4,14}}],
+
+    Cell["Algorithm Under Test", "Section"],
+    Cell[algCode, "Code"],
+
+    Cell["Decision Trees  (Symbolic Execution Paths)", "Section"],
+    Cell[TextData[{
+      "Each tree shows all bit sequences the algorithm can consume from a \
+given starting state.  ",
+      StyleBox["Blue", FontWeight->"Bold",
+               FontColor->RGBColor[0.22,0.42,0.70]],
+      " = root / internal bit-choice node.  ",
+      StyleBox["Green", FontWeight->"Bold", FontColor->Darker[Green,0.2]],
+      " outcome = algorithm moved to a new state.  ",
+      StyleBox["Orange", FontWeight->"Bold", FontColor->Darker[Orange,0.1]],
+      " outcome = algorithm stayed.  Edge labels are bit values (0 / 1).  \
+Outcome labels show the destination state and symbolic acceptance probability."
+    }], "Text"],
+    Cell[BoxData @ ToBoxes @ Row[trees, Spacer[12]],
+         "Output", CellMargins -> {{8,8},{4,4}}],
+
+    Cell["Symbolic Transition Matrix  T[ i \[Rule] j ]", "Section"],
+    Cell["Entry (i, j) = total probability of transitioning FROM state i \
+TO state j, accumulated over all execution paths.  \[Beta] is kept symbolic \
+throughout.", "Text"],
+    Cell[BoxData @ ToBoxes @ matGrid,
+         "Output", CellMargins -> {{8,8},{4,4}}],
+
+    Cell["Detailed Balance Check:  \
+T(i\[Rule]j)\[CenterDot]\[Pi](i) = T(j\[Rule]i)\[CenterDot]\[Pi](j)", "Section"],
+    Cell["Every pair of distinct states is tested using FullSimplify with \
+\[Beta] > 0 so that Piecewise Metropolis expressions are resolved exactly.  \
+\[Pi](s) = Exp[\[Minus]\[Beta] E(s)].", "Text"],
+    Cell[BoxData @ ToBoxes @ dbTab,
+         "Output", CellMargins -> {{8,8},{4,4}}],
+
+    Cell["Numerical MCMC Validation", "Section"],
+    Cell["The algorithm is run as a live Markov chain with genuinely random \
+bits.  Simulated state frequencies are compared to the analytical Boltzmann \
+distribution Exp[\[Minus]\[Beta]E(s)] / Z.", "Text"],
+    Cell[BoxData @ ToBoxes @ freqPanel,
+         "Output", CellMargins -> {{8,8},{4,18}}]
+  };
+
+  (* ---- Open notebook window ---- *)
+  nb = Quiet @ Check[
+    CreateDocument[
+      cells,
+      WindowTitle  -> "DetailedBalanceChecker \[LongDash] " <> name,
+      WindowSize   -> {1100, 860},
+      WindowMargins -> {{Automatic, Automatic}, {Automatic, 0}},
+      Editable     -> False,
+      Background   -> White,
+      StyleDefinitions -> "Default.nb"
+    ],
+    (Print["  (No Mathematica frontend available; window not opened.)"]; None)
+  ];
+  nb
+]
+
+
+(* ================================================================
+   SECTION 6 – TOP-LEVEL ENTRY POINT
+   ================================================================ *)
 
 (* ----------------------------------------------------------------
    RunFullCheck
-   Top-level entry point.  Runs symbolic + numerical checks and
-   prints a self-contained report.  Optionally exports plots.
+   Orchestrates BFS, symbolic check, numerical MCMC, and the
+   graphical report window.
 
    Arguments:
-     allStates  list of all valid states
-     symAlg     algorithm for symbolic check (uses MetropolisProb)
-     numAlg     algorithm for numerical check (fully numeric)
-     symEnergy  bare energy function, symbolic in couplings
-     numEnergy  numeric energy function WITH beta folded in
+     allStates   list of all valid system states
+     symAlg      algorithm for symbolic check  (uses MetropolisProb)
+     numAlg      algorithm for numerical MCMC  (fully numeric)
+     symEnergy   bare energy, symbolic in couplings, no beta
+     numEnergy   numeric energy WITH beta folded in
+
+   Options:
+     "SystemName"       display name
+     "AlgorithmCode"    string shown in the Algorithm section
+                        (Automatic = extracted from symAlg DownValues)
+     "MaxBitDepth"      BFS depth cap per state (default 20)
+     "TimeLimit"        seconds per state BFS (default 60)
+     "Verbose"          print BFS progress (default True)
+     "NSteps"           MCMC steps (default 100 000)
+     "WarmupFrac"       warm-up fraction (default 0.1)
+     "OpenWindow"       open graphical report window (default True)
    ---------------------------------------------------------------- *)
 Options[RunFullCheck] = Join[
-  Options[BuildTransitionMatrix],
+  Options[BuildTreeData],
   Options[RunNumericalMCMC],
-  {"SystemName"   -> "Unnamed system",
-   "ExportPlots"  -> False,
-   "PlotDirectory" -> "."}
+  {"SystemName"    -> "Unnamed system",
+   "AlgorithmCode" -> Automatic,
+   "OpenWindow"    -> True}
 ]
 
 RunFullCheck[allStates_List, symAlg_, numAlg_,
              symEnergy_, numEnergy_, OptionsPattern[]] := Module[
   {name     = OptionValue["SystemName"],
-   doPlots  = OptionValue["ExportPlots"],
-   plotDir  = OptionValue["PlotDirectory"],
    n        = Length[allStates],
-   algOpts, matrix, violations, counts, bw, simFreq, kl, plotDir2},
+   algCode, treeData, matrix, violations,
+   counts, bw, simFreq, kl, pass},
 
-  (* Options to forward to BuildTransitionMatrix *)
-  algOpts = Sequence[
-    "MaxBitDepth" -> OptionValue["MaxBitDepth"],
-    "TimeLimit"   -> OptionValue["TimeLimit"]
-  ];
+  algCode = OptionValue["AlgorithmCode"];
+  If[algCode === Automatic,
+    algCode = StringTrim @
+              ToString[InputForm[DownValues[symAlg]], OutputForm]];
 
-  (* Ensure plot directory ends with a separator *)
-  plotDir2 = If[StringEndsQ[plotDir, $PathnameSeparator],
-                plotDir,
-                plotDir <> $PathnameSeparator];
-
-  sep[c_] := Print[StringRepeat[c, 62]];
-
-  sep["="];
+  (* ---- Terminal progress ---- *)
+  Print[StringRepeat["=", 62]];
   Print["DETAILED BALANCE CHECKER"];
-  sep["="];
+  Print[StringRepeat["=", 62]];
   Print["System : ", name];
-  Print["States : ", n, " -- ", allStates];
-  sep["="];
+  Print["States : ", n, "  --  ", allStates];
+  Print[StringRepeat["=", 62]];
 
-  (* ---- 1. Symbolic check ---- *)
-  Print["\n[1/2] SYMBOLIC DETAILED BALANCE CHECK"];
-  sep["-"];
-  Print["Building decision trees for all ", n, " states..."];
+  (* ---- 1. Symbolic tree building ---- *)
+  Print["\n[1/3] Building decision trees (symAlg) ..."];
+  treeData = BuildTreeData[allStates, symAlg,
+               "MaxBitDepth" -> OptionValue["MaxBitDepth"],
+               "TimeLimit"   -> OptionValue["TimeLimit"],
+               "Verbose"     -> OptionValue["Verbose"]];
+  matrix   = TreeDataToMatrix[allStates, treeData];
+  Print["      Transition matrix: ", Length[matrix], " non-zero entries."];
 
-  matrix = BuildTransitionMatrix[allStates, symAlg,
-    algOpts, "Verbose" -> OptionValue["Verbose"]];
-
-  Print["Transition matrix: ", Length[matrix], " non-zero entries."];
-  Print["Checking ", Binomial[n, 2], " pairs for detailed balance..."];
-
+  (* ---- 2. Detailed balance check ---- *)
+  Print["\n[2/3] Checking detailed balance for ",
+        Binomial[n,2], " pairs ..."];
   violations = CheckDetailedBalance[matrix, allStates, symEnergy];
-
-  If[violations === {},
-    Print["\n  RESULT: PASS -- all ", Binomial[n, 2],
-          " pairs satisfy detailed balance exactly."],
-    Print["\n  RESULT: FAIL -- ", Length[violations], " violation(s):"];
-    Scan[Function[v,
-      Print["    ", v["pair"], "  residual = ", v["residual"]]
-    ], violations]
+  pass       = violations === {};
+  If[pass,
+    Print["      RESULT: PASS -- all pairs satisfy detailed balance exactly."],
+    Print["      RESULT: FAIL -- ", Length[violations], " violation(s) found."]
   ];
 
-  (* ---- 2. Numerical check ---- *)
-  Print["\n[2/2] NUMERICAL MCMC CHECK"];
-  sep["-"];
-  Print["Running ", OptionValue["NSteps"], " MCMC steps..."];
-
+  (* ---- 3. Numerical MCMC ---- *)
+  Print["\n[3/3] Running ", OptionValue["NSteps"],
+        " MCMC steps (numAlg) ..."];
   counts  = RunNumericalMCMC[allStates, numAlg,
               "NSteps"     -> OptionValue["NSteps"],
               "WarmupFrac" -> OptionValue["WarmupFrac"]];
   bw      = BoltzmannWeights[allStates, numEnergy];
   simFreq = N[# / Total[counts]] & /@ counts;
+  kl      = Total @ Table[
+    With[{p = simFreq[s], q = N@bw[s]},
+      If[p > 0 && q > 0, p * Log[p/q], 0.]], {s, allStates}];
 
-  Print["\n  ", PaddedForm["State", 20],
-               PaddedForm["Simulated", 12],
-               PaddedForm["Boltzmann", 12]];
-  Print["  ", StringRepeat["-", 44]];
-  Scan[Function[s,
-    Print["  ", PaddedForm[ToString[s], 20],
-               PaddedForm[NumberForm[simFreq[s], {5, 4}], 12],
-               PaddedForm[NumberForm[N @ bw[s],  {5, 4}], 12]]
-  ], allStates];
+  Print["      KL divergence (sim || Boltzmann) = ",
+        NumberForm[kl,{5,4}]];
+  Print["      Numerical: ",
+    If[kl < 0.02, "CONSISTENT with Boltzmann.",
+                  "WARNING -- significant deviation from Boltzmann."]];
 
-  kl = Total @ Table[
-    With[{p = simFreq[s], q = N @ bw[s]},
-      If[p > 0 && q > 0, p * Log[p / q], 0.]],
-    {s, allStates}];
+  Print["\n", StringRepeat["=", 62]];
+  Print["OVERALL: ", If[pass, "PASS", "FAIL"]];
+  Print[StringRepeat["=", 62]];
 
-  Print["\n  KL divergence (sim || Boltzmann) = ", NumberForm[kl, {6, 5}]];
-  Print["  Numerical verdict: ",
-    If[kl < 0.02,
-       "CONSISTENT with Boltzmann.",
-       "WARNING -- significant deviation from Boltzmann."]];
-
-  (* ---- 3. Plots (optional) ---- *)
-  If[doPlots,
-    Print["\n[+] Exporting plots..."];
-    sep["-"];
-    ExportPlots[allStates, numAlg, simFreq, bw, name, plotDir2, algOpts]
+  (* ---- Open graphical window ---- *)
+  If[TrueQ @ OptionValue["OpenWindow"],
+    Print["\nOpening report window ..."];
+    MakeReportWindow[<|
+      "name"       -> name,
+      "allStates"  -> allStates,
+      "treeData"   -> treeData,
+      "matrix"     -> matrix,
+      "violations" -> violations,
+      "simFreq"    -> simFreq,
+      "bw"         -> bw,
+      "kl"         -> kl,
+      "algCode"    -> algCode
+    |>]
   ];
-
-  sep["="];
-  Print["END OF REPORT\n"];
 
   <|"matrix"     -> matrix,
     "violations" -> violations,
     "counts"     -> counts,
-    "boltzmann"  -> bw|>
+    "boltzmann"  -> bw,
+    "kl"         -> kl,
+    "pass"       -> pass|>
 ]
