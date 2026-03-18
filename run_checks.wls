@@ -89,6 +89,4 @@ result3 = RunFullCheck[
   "OpenWindow"    -> True
 ];
 
-Print["\nAll checks complete.  Three report windows should now be open."];
-(* Keep kernel alive so the notebook windows stay open *)
-Pause[600]
+Print["\nAll checks complete.  PNG reports have been opened."];

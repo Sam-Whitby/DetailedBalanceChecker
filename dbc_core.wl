@@ -10,6 +10,8 @@
    ================================================================ *)
 
 
+$dbcDir = DirectoryName[$InputFileName];
+
 (* ================================================================
    SECTION 1 – PRIMITIVES
    ================================================================ *)
@@ -217,6 +219,94 @@ BoltzmannWeights[allStates_List, numEnergy_] := Module[
   AssociationThread[allStates -> ws / Z]
 ]
 
+
+(* ================================================================
+   SECTION 3b – JSON EXPORT + PYTHON VISUALISATION
+   ================================================================ *)
+
+(* Compact string for a probability (symbolic or numeric) *)
+$probStr[p_] := Which[
+  p === 0 || p === 0.,   "0",
+  p === 1 || p === 1.,   "1",
+  NumericQ[p],           ToString[NumberForm[N[p], {4, 3}]],
+  True,                  StringTake[ToString[p, InputForm], UpTo[60]]
+]
+
+ExportReportJSON[args_Association, outPath_String] := Module[
+  {name, allStates, treeData, matrix, violations, simFreq, bw, kl, algCode,
+   pass, n, violPairs, dbJSON, treeJSON, matJSON},
+
+  name       = args["name"];
+  allStates  = args["allStates"];
+  treeData   = args["treeData"];
+  matrix     = args["matrix"];
+  violations = args["violations"];
+  simFreq    = args["simFreq"];
+  bw         = args["bw"];
+  kl         = N @ args["kl"];
+  algCode    = args["algCode"];
+  pass       = violations === {};
+  n          = Length[allStates];
+  violPairs  = If[violations === {}, {}, #["pair"] & /@ violations];
+
+  treeJSON = Association @ Table[
+    ToString[s] -> Table[
+      <|"bits"     -> leaf[[1]],
+        "outcomes" -> Table[
+          <|"probStr" -> $probStr[out[[1]]], "state" -> out[[2]]|>,
+          {out, leaf[[2]]}]|>,
+      {leaf, treeData[s]}],
+    {s, allStates}];
+
+  matJSON = Flatten[Table[
+    <|"from" -> allStates[[i]],
+      "to"   -> allStates[[j]],
+      "str"  -> $probStr[Lookup[matrix, Key[{allStates[[i]], allStates[[j]]}], 0]]|>,
+    {i, n}, {j, n}], 1];
+
+  dbJSON = Flatten[Table[
+    With[{si = allStates[[i]], sj = allStates[[j]]},
+      <|"i" -> si, "j" -> sj,
+        "pass" -> (!MemberQ[violPairs, {si, sj}])|>],
+    {i, n}, {j, i+1, n}], 1];
+
+  Export[outPath,
+    <|"name"      -> name,
+      "pass"      -> pass,
+      "kl"        -> kl,
+      "algCode"   -> algCode,
+      "allStates" -> allStates,
+      "simFreq"   -> (N[simFreq[#]] & /@ allStates),
+      "boltzmann" -> (N[bw[#]]      & /@ allStates),
+      "dbPairs"   -> dbJSON,
+      "matrix"    -> matJSON,
+      "treeData"  -> treeJSON|>,
+    "JSON"]
+]
+
+ExportAndShowPython[args_Association] := Module[
+  {safeName, jsonPath, pyScript, result, pngPath},
+  safeName = StringReplace[args["name"],
+               {" " -> "_", Except[WordCharacter | "_"] -> ""}];
+  jsonPath = $dbcDir <> safeName <> "_report.json";
+  pyScript = $dbcDir <> "show_report.py";
+
+  If[!FileExistsQ[pyScript],
+    Print["  show_report.py not found at: ", pyScript]; Return[None]];
+
+  Print["  Exporting JSON ..."];
+  ExportReportJSON[args, jsonPath];
+
+  Print["  Running Python visualisation ..."];
+  result = RunProcess[{"python3", pyScript, jsonPath}];
+
+  If[result["ExitCode"] == 0,
+    pngPath = StringTrim[result["StandardOutput"]];
+    Print["  Report saved: ", pngPath];
+    If[FileExistsQ[pngPath], RunProcess[{"open", pngPath}]],
+    Print["  Python error:\n", result["StandardError"]]
+  ]
+]
 
 (* ================================================================
    SECTION 4 – VISUALISATION PRIMITIVES
@@ -659,20 +749,25 @@ RunFullCheck[allStates_List, symAlg_, numAlg_,
   Print["OVERALL: ", If[pass, "PASS", "FAIL"]];
   Print[StringRepeat["=", 62]];
 
-  (* ---- Open graphical window ---- *)
+  (* ---- Open graphical window / Python fallback ---- *)
   If[TrueQ @ OptionValue["OpenWindow"],
-    Print["\nOpening report window ..."];
-    MakeReportWindow[<|
-      "name"       -> name,
-      "allStates"  -> allStates,
-      "treeData"   -> treeData,
-      "matrix"     -> matrix,
-      "violations" -> violations,
-      "simFreq"    -> simFreq,
-      "bw"         -> bw,
-      "kl"         -> kl,
-      "algCode"    -> algCode
-    |>]
+    With[{reportArgs = <|
+        "name"       -> name,
+        "allStates"  -> allStates,
+        "treeData"   -> treeData,
+        "matrix"     -> matrix,
+        "violations" -> violations,
+        "simFreq"    -> simFreq,
+        "bw"         -> bw,
+        "kl"         -> kl,
+        "algCode"    -> algCode|>},
+      Print["\nOpening report window ..."];
+      nb = MakeReportWindow[reportArgs];
+      If[nb === None,
+        Print["  (No Mathematica frontend -- falling back to Python.)"];
+        ExportAndShowPython[reportArgs]
+      ]
+    ]
   ];
 
   <|"matrix"     -> matrix,
