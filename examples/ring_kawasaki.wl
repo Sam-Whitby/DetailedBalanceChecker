@@ -3,51 +3,54 @@
    ================================================================
 
    System: L sites on a ring, 1 particle.
-   State:  integer 1..L giving the particle's site.
-   Energy: E(i) = eps_i  (site-dependent, symbolic in eps1,eps2,...,epsL).
+   State:  integer 1..L (which site the particle occupies).
+   Energy: E(i) = eps_i  (symbolic coupling constants eps1, eps2, ...).
    Move:   read 1 bit -> choose left (0) or right (1) neighbour,
-           then apply Metropolis acceptance.
+           then Metropolis acceptance.
 
-   Because the proposal is symmetric (each neighbour chosen with p=1/2)
-   and Metropolis is used, detailed balance holds exactly.
+   The proposal is symmetric and Metropolis is correct, so
+   detailed balance holds exactly.
    ================================================================ *)
 
-(* ---- Parameters ---- *)
-L$rk = 3;   (* ring size *)
+(* ---- System parameters ---- *)
+L$rk        = 3
+allStates$rk = Range[L$rk]
 
-(* Symbolic site energies eps1, eps2, eps3 *)
-eps$rk = Table[Symbol["eps" <> ToString[i]], {i, L$rk}];
+(* Symbolic site energies: eps1, eps2, eps3 *)
+eps$sym$rk = Table[Symbol["eps" <> ToString[i]], {i, L$rk}]
 
-(* Symbolic beta -- must be the symbol \[Beta] used by MetropolisProb *)
-(* (already defined as the global symbol in dbc_core.wl) *)
+(* Symbolic bare energy (no beta -- beta is inserted by the checker) *)
+symEnergy$rk[s_Integer] := eps$sym$rk[[s]]
 
-(* All valid states *)
-allStates$rk = Range[L$rk];
+(* Numeric parameters for validation *)
+numBeta$rk  = 1.5
+numEps$rk   = {0.0, 1.0, 0.5}
 
-(* Symbolic energy *)
-symEnergy$rk[s_Integer] := eps$rk[[s]]
-
-(* Numerical energy -- use specific values for validation *)
-numEps$rk = {0.0, 1.0, 0.5};   (* eps1=0, eps2=1, eps3=0.5 *)
-numBeta$rk = 1.5;
+(* numEnergy includes beta so Exp[-numEnergy[s]] gives Boltzmann weight *)
 numEnergy$rk[s_Integer] := numBeta$rk * numEps$rk[[s]]
 
-(* ---- Algorithm: Kawasaki with Metropolis ---- *)
-KawasakiGood[state_Integer, readBit_] := Module[
-  {dir, nbr, dE, p},
-  dir = readBit[];                              (* 0 = left, 1 = right *)
-  nbr = Mod[state + If[dir == 1, 1, -1] - 1, L$rk] + 1;
-  dE  = symEnergy$rk[nbr] - symEnergy$rk[state];
-  p   = MetropolisProb[dE];
-  {{p, nbr}, {1 - p, state}}                   (* accept / reject *)
-]
-
-(* Numerical variant (replaces symbolic energy with numeric) *)
-KawasakiGoodNum[state_Integer, readBit_] := Module[
+(* ================================================================
+   Symbolic algorithm: uses MetropolisProb (keeps beta symbolic).
+   Call this with the symbolic checker.
+   ================================================================ *)
+KawasakiSym$rk[state_Integer, readBit_] := Module[
   {dir, nbr, dE, p},
   dir = readBit[];
   nbr = Mod[state + If[dir == 1, 1, -1] - 1, L$rk] + 1;
-  dE  = numBeta$rk * (numEps$rk[[nbr]] - numEps$rk[[state]]);
-  p   = N[If[dE <= 0, 1, Exp[-dE]]];
+  dE  = symEnergy$rk[nbr] - symEnergy$rk[state];   (* eps_nbr - eps_state *)
+  p   = MetropolisProb[dE];                          (* Piecewise, symbolic beta *)
+  {{p, nbr}, {1 - p, state}}
+]
+
+(* ================================================================
+   Numerical algorithm: fully numeric, beta already in dE.
+   Call this for the numerical MCMC run.
+   ================================================================ *)
+KawasakiNum$rk[state_Integer, readBit_] := Module[
+  {dir, nbr, dE, p},
+  dir = readBit[];
+  nbr = Mod[state + If[dir == 1, 1, -1] - 1, L$rk] + 1;
+  dE  = numEnergy$rk[nbr] - numEnergy$rk[state];   (* already beta-scaled *)
+  p   = N@If[dE <= 0, 1, Exp[-dE]];
   {{p, nbr}, {1 - p, state}}
 ]

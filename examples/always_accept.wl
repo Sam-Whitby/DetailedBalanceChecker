@@ -2,25 +2,30 @@
    Example 2: Kawasaki with no Metropolis acceptance -- FAILS
    ================================================================
 
-   Same ring system as ring_kawasaki.wl but the move always accepts
-   the proposed swap, ignoring the energy difference.
-
-   This samples the UNIFORM distribution over states rather than
+   Same ring system.  The proposed swap is always accepted regardless
+   of the energy change.  This samples the UNIFORM distribution, not
    the Boltzmann distribution, so detailed balance fails whenever
-   the site energies differ.
+   site energies differ.
    ================================================================ *)
 
 Get[DirectoryName[$InputFileName] <> "ring_kawasaki.wl"]
 
-(* Reuse same state space and energy functions *)
-allStates$aa  = allStates$rk
-symEnergy$aa  = symEnergy$rk
-numEnergy$aa  = numEnergy$rk  (* same numeric energies as the good example *)
+allStates$aa = allStates$rk
+symEnergy$aa = symEnergy$rk
+numEnergy$aa = numEnergy$rk
 
-(* ---- Algorithm: always accept (no Metropolis) ---- *)
-AlwaysAccept[state_Integer, readBit_] := Module[
+(* Symbolic: always accept -- returns the new site with prob 1 *)
+AlwaysAcceptSym[state_Integer, readBit_] := Module[
   {dir, nbr},
   dir = readBit[];
   nbr = Mod[state + If[dir == 1, 1, -1] - 1, L$rk] + 1;
-  nbr   (* just return the new state unconditionally *)
+  nbr    (* single state returned; probability 1 *)
+]
+
+(* Numerical: identical logic *)
+AlwaysAcceptNum[state_Integer, readBit_] := Module[
+  {dir, nbr},
+  dir = readBit[];
+  nbr = Mod[state + If[dir == 1, 1, -1] - 1, L$rk] + 1;
+  nbr
 ]

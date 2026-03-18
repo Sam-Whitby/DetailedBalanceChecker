@@ -22,16 +22,25 @@ If the algorithm never returns for some bit sequence, the BFS will eventually hi
 
 ## Algorithm interface
 
+Provide **two** algorithm functions with the same signature:
+
 ```mathematica
-myAlg[state_, readBit_] := ...
+symAlg[state_, readBit_]   (* for the symbolic check *)
+numAlg[state_, readBit_]   (* for the numerical MCMC check *)
 ```
 
-- `readBit[]` returns `0` or `1` each time it is called (discrete random choices).
-- The function returns **either**:
+- `readBit[]` returns `0` or `1` each time it is called.
+- Each function returns **either**:
   - A single new state — if all randomness came from bits.
-  - A list `{{p1, s1}, {p2, s2}, ...}` — probabilities and new states (for Metropolis acceptance etc.). Probabilities must sum to 1.
+  - `{{p1, s1}, {p2, s2}, ...}` — explicit probability-weighted outcomes (probabilities sum to 1). Use this for the Metropolis acceptance step.
 
-Use `MetropolisProb[deltaE]` from the library to produce the standard Metropolis acceptance probability as a symbolic `Piecewise` expression in `β`.
+**`symAlg`**: energy differences should be symbolic (e.g. `eps2 - eps1`). Use `MetropolisProb[deltaE]` which produces a `Piecewise` expression symbolic in `β`. `β` must be unassigned when the symbolic check runs.
+
+**`numAlg`**: all quantities should be fully numeric. Compute `dE` from a numeric energy function that already has `beta` folded in. Use `N@If[dE <= 0, 1, Exp[-dE]]` for Metropolis acceptance.
+
+**`symEnergy[state]`**: bare energy `E(s)`, symbolic in coupling constants, **without** `β`. The checker inserts `β` via `Exp[-β * symEnergy[s]]`.
+
+**`numEnergy[state]`**: fully numeric, **with** `beta` folded in (e.g. `numBeta * E_numeric(s)`). Used to compute Boltzmann weights as `Exp[-numEnergy[s]]`.
 
 ## Files
 
@@ -59,22 +68,36 @@ wolframscript -file run_checks.wls
 ```mathematica
 Get["path/to/dbc_core.wl"]
 
-(* Define your system *)
-allStates = {1, 2, 3}
-symEnergy[s_] := eps[[s]]        (* symbolic in beta, J, etc. *)
-numEnergy[s_] := 1.5 * neps[[s]] (* fully numeric *)
+allStates  = {1, 2, 3}
+numBeta    = 1.5
+numEps     = {0., 1., 0.5}
+epsSymbols = {eps1, eps2, eps3}   (* unassigned symbols *)
 
-myAlg[state_, readBit_] := Module[{dir, nbr, dE, p},
-  dir = readBit[];               (* consume 1 bit *)
-  nbr = ...; dE = symEnergy[nbr] - symEnergy[state];
-  p = MetropolisProb[dE];        (* Piecewise Metropolis probability *)
+symEnergy[s_] := epsSymbols[[s]]              (* bare E(s), no beta *)
+numEnergy[s_] := numBeta * numEps[[s]]        (* beta * E(s), numeric *)
+
+(* Symbolic algorithm -- beta stays unassigned *)
+mySymAlg[state_, readBit_] := Module[{dir, nbr, dE, p},
+  dir = readBit[];
+  nbr = ...;
+  dE  = symEnergy[nbr] - symEnergy[state];    (* eps_nbr - eps_state *)
+  p   = MetropolisProb[dE];                   (* Piecewise in beta, symbolic *)
   {{p, nbr}, {1 - p, state}}
 ]
 
-RunFullCheck[allStates, myAlg, symEnergy, numEnergy,
-  "SystemName" -> "My system",
+(* Numeric algorithm -- beta already in dE *)
+myNumAlg[state_, readBit_] := Module[{dir, nbr, dE, p},
+  dir = readBit[];
+  nbr = ...;
+  dE  = numEnergy[nbr] - numEnergy[state];    (* numeric, beta-scaled *)
+  p   = N@If[dE <= 0, 1, Exp[-dE]];
+  {{p, nbr}, {1 - p, state}}
+]
+
+RunFullCheck[allStates, mySymAlg, myNumAlg, symEnergy, numEnergy,
+  "SystemName"  -> "My system",
   "MaxBitDepth" -> 15,
-  "NSteps" -> 100000
+  "NSteps"      -> 100000
 ]
 ```
 

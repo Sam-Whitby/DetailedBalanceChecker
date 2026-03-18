@@ -7,88 +7,96 @@
 
    ALGORITHM INTERFACE
    -------------------
-   Your algorithm must have signature:
+   Provide TWO algorithm functions with the same signature:
 
-     myAlg[state_, readBit_] := ...
+     symAlg[state_, readBit_]   -- for the symbolic check.
+                                   Energy differences are symbolic
+                                   (e.g. eps2 - eps1).
+                                   Use MetropolisProb[dE] for acceptance.
 
-   where readBit[] returns 0 or 1 each time it is called (discrete
-   random choices, e.g. site selection).
+     numAlg[state_, readBit_]   -- for the numerical MCMC check.
+                                   All quantities fully numeric.
+                                   Use If[dE<=0, 1., Exp[-dE]] etc.,
+                                   where dE already includes beta.
 
-   The function returns EITHER:
-     (a) A single new state  (all randomness consumed via readBit)
-     (b) A list {{p1,s1}, {p2,s2}, ...} of symbolic {probability, newState}
-         pairs summing to 1.  Use this for continuous acceptance steps
-         (Metropolis) so the probability is kept exact and symbolic.
+   Each function either:
+     (a) Returns a single new state  (all randomness from readBit)
+     (b) Returns {{p1,s1},{p2,s2},...} -- explicit probability-weighted
+         outcomes.  Probabilities must sum to 1.
+         Use this for Metropolis acceptance so it stays exact/symbolic.
 
-   The helper MetropolisProb[deltaE] produces the standard Metropolis
-   acceptance probability as a symbolic Piecewise expression.
+   ENERGY INTERFACE
+   ----------------
+     symEnergy[state]  -- bare energy E(s), symbolic in coupling
+                          constants.  Beta is NOT included; the library
+                          inserts Exp[-beta * symEnergy[s]] for Boltzmann
+                          weights and FullSimplify uses beta > 0.
 
-   ENERGY FUNCTION INTERFACE
-   --------------------------
-   Provide two energy functions:
-     symEnergy[state]  -- returns expression symbolic in β (and any
-                          coupling constants like J).  Used for the
-                          Boltzmann weight in the detailed-balance check.
-     numEnergy[state]  -- returns a plain number.  Used for the
-                          numerical MCMC validation run.
+     numEnergy[state]  -- fully numeric, WITH beta folded in, i.e.
+                          numBeta * E_numeric(s).  Used to compute
+                          Boltzmann weights as Exp[-numEnergy[s]].
+
+   HELPER
+   ------
+     MetropolisProb[deltaE]  -- Piecewise Metropolis acceptance
+                                probability, symbolic in beta and deltaE.
 
    ================================================================ *)
 
-BeginPackage["DetailedBalanceChecker`"]
-
-(* Public symbols *)
-MetropolisProb; RunWithBits; BuildTransitionMatrix;
-CheckDetailedBalance; RunNumericalMCMC; BoltzmannWeights; RunFullCheck;
-
-Begin["`Private`"]
+(* No package wrapper -- load with Get["dbc_core.wl"] *)
 
 (* ----------------------------------------------------------------
    MetropolisProb
-   Standard Metropolis acceptance probability as a symbolic Piecewise.
-   deltaE should be a symbolic or numeric energy difference.
-   beta must be defined in the caller's scope (or passed explicitly).
+   Standard Metropolis probability as an exact symbolic Piecewise.
+   deltaE is the bare energy difference (no beta factor).
+   The global symbol \[Beta] (beta) is used; it stays symbolic
+   during the symbolic check and is substituted by the caller in
+   numerical contexts.
    ---------------------------------------------------------------- *)
 MetropolisProb[deltaE_] :=
-  Piecewise[{{1, deltaE <= 0}, {Exp[-\[Beta] deltaE], deltaE > 0}}]
+  Piecewise[{{1, deltaE <= 0}, {Exp[-\[Beta] * deltaE], deltaE > 0}}]
 
 (* ----------------------------------------------------------------
    RunWithBits
-   Run alg[state, readBit] with a specific fixed bit sequence.
-   readBit[] reads the next bit; throws if the sequence is exhausted.
+   Run alg[state, readBit] with a fixed bit sequence.
+   readBit[] returns successive bits; throws $dbc$outOfBits when
+   the sequence is exhausted.
    Returns:
-     {outcomes, nBitsConsumed}   where outcomes is a list {{p,s},...}
-     $OutOfBits                  if the algorithm needed more bits
+     {outcomes, nBitsConsumed}   outcomes = {{p,s},...}
+     $OutOfBits                  if algorithm needed more bits
    ---------------------------------------------------------------- *)
 RunWithBits[alg_, state_, bits_List] := Module[
   {pos = 0, readBit, raw},
   readBit[] := (
     pos++;
     If[pos > Length[bits],
-      Throw[$OutOfBits, $dbc$tag],
+      Throw[$OutOfBits, $dbc$outOfBits],
       bits[[pos]]
     ]
   );
-  raw = Catch[alg[state, readBit], $dbc$tag, ($OutOfBits &)];
+  raw = Catch[alg[state, readBit], $dbc$outOfBits, ($OutOfBits &)];
   If[raw === $OutOfBits,
     $OutOfBits,
-    (* Normalise to list-of-outcomes form *)
+    (* Normalise to list-of-outcomes form {{p,s},...} *)
     {If[ListQ[raw] && Length[raw] > 0 && ListQ[raw[[1]]],
-       raw,                     (* already {{p,s},...} *)
-       {{1, raw}}               (* single state -> prob 1 *)
-     ], pos}
+       raw,
+       {{1, raw}}],
+     pos}
   ]
 ]
 
 (* ----------------------------------------------------------------
    BuildTransitionMatrix
-   BFS over all possible bit sequences for a single starting state.
-   Bits are extended one level at a time whenever the algorithm
-   needs more randomness than the current sequence supplies.
-   Returns an Association  {fromState, toState} -> symbolicProbability.
+   BFS over bit sequences for every starting state.
+   A sequence is extended by one bit whenever the algorithm calls
+   readBit[] beyond its current length.  Each completed path at
+   depth k contributes probability (1/2)^k * p_outcome.
+
+   Returns Association  {fromState, toState} -> symbolicProbability.
    ---------------------------------------------------------------- *)
 Options[BuildTransitionMatrix] = {
-  "MaxBitDepth" -> 20,   (* Hard limit on path length *)
-  "TimeLimit"   -> 60.,  (* Seconds per starting state *)
+  "MaxBitDepth" -> 20,   (* hard cap on path length *)
+  "TimeLimit"   -> 60.,  (* seconds budget per starting state *)
   "Verbose"     -> True
 }
 
@@ -103,7 +111,7 @@ BuildTransitionMatrix[allStates_List, alg_, OptionsPattern[]] := Module[
 
   Do[
     If[verbose, Print["  Tree for state: ", s]];
-    queue    = {{}};  (* BFS queue of bit sequences to try *)
+    queue    = {{}};
     t0       = AbsoluteTime[];
     timedOut = False;
 
@@ -114,23 +122,22 @@ BuildTransitionMatrix[allStates_List, alg_, OptionsPattern[]] := Module[
       res   = RunWithBits[alg, s, bits];
 
       Which[
-        (* Algorithm needs more bits - extend by one level *)
         res === $OutOfBits && Length[bits] < maxDepth,
+          (* extend tree by one bit level *)
           queue = Join[queue, {Append[bits, 0], Append[bits, 1]}],
 
-        (* Hit depth limit without terminating *)
         res === $OutOfBits,
           Print["  WARNING: MaxBitDepth=", maxDepth,
-                " reached for state ", s, " bits ", bits,
-                ". Path excluded - algorithm may not halt on this input."],
+                " reached for state ", s, " on bit prefix ", bits,
+                " -- path excluded (algorithm may not halt)."],
 
-        (* Algorithm returned outcome(s) *)
         True,
-          {outcomes, k} = res;  (* k = bits consumed *)
+          {outcomes, k} = res;
           Do[
             With[{p = out[[1]], ns = out[[2]]},
               If[!KeyExistsQ[stateSet, ns],
-                Print["  WARNING: Invalid state returned: ", ns],
+                Print["  WARNING: Algorithm returned invalid state ", ns,
+                      " from ", s],
                 matrix[{s, ns}] =
                   Lookup[matrix, Key[{s, ns}], 0] + p * (1/2)^k
               ]
@@ -140,7 +147,7 @@ BuildTransitionMatrix[allStates_List, alg_, OptionsPattern[]] := Module[
       ]
     ];
 
-    If[timedOut, Print["  WARNING: Time limit exceeded for state ", s]],
+    If[timedOut, Print["  WARNING: Time limit reached for state ", s]],
     {s, allStates}
   ];
 
@@ -149,9 +156,13 @@ BuildTransitionMatrix[allStates_List, alg_, OptionsPattern[]] := Module[
 
 (* ----------------------------------------------------------------
    CheckDetailedBalance
-   For every pair {i,j} verify T(i->j)*pi(i) = T(j->i)*pi(j)
-   where pi(s) ∝ Exp[-symEnergy[s]].
-   Returns list of violations; empty list means PASS.
+   Verifies T(i->j) * pi(i) = T(j->i) * pi(j) for all pairs i<j,
+   where pi(s) = Exp[-beta * symEnergy[s]].
+
+   Uses FullSimplify with Assumptions -> {beta > 0} to handle the
+   Piecewise expressions that arise from MetropolisProb.
+
+   Returns a list of violations (empty = PASS).
    ---------------------------------------------------------------- *)
 CheckDetailedBalance[matrix_Association, allStates_List, symEnergy_] := Module[
   {n = Length[allStates], violations = {}, si, sj, tij, tji, res},
@@ -159,8 +170,10 @@ CheckDetailedBalance[matrix_Association, allStates_List, symEnergy_] := Module[
     si = allStates[[i]]; sj = allStates[[j]];
     tij = Lookup[matrix, Key[{si, sj}], 0];
     tji = Lookup[matrix, Key[{sj, si}], 0];
-    res = Simplify[
-      tij * Exp[-symEnergy[si]] - tji * Exp[-symEnergy[sj]]
+    res = FullSimplify[
+      tij * Exp[-\[Beta] * symEnergy[si]] -
+      tji * Exp[-\[Beta] * symEnergy[sj]],
+      Assumptions -> {\[Beta] > 0}
     ];
     If[res =!= 0,
       AppendTo[violations, <|"pair" -> {si, sj}, "residual" -> res|>]
@@ -172,68 +185,80 @@ CheckDetailedBalance[matrix_Association, allStates_List, symEnergy_] := Module[
 
 (* ----------------------------------------------------------------
    RunNumericalMCMC
-   Run the algorithm with a true random bit generator.
-   Returns an Association  state -> visitCount.
+   Run numAlg with true random bits and sample-from-outcomes logic
+   for Metropolis branches.  All quantities should be fully numeric.
+   Returns Association  state -> visitCount.
    ---------------------------------------------------------------- *)
 Options[RunNumericalMCMC] = {
   "NSteps"     -> 100000,
   "WarmupFrac" -> 0.1
 }
 
-RunNumericalMCMC[allStates_List, alg_, numEnergy_, OptionsPattern[]] := Module[
-  {nSteps   = OptionValue["NSteps"],
-   warmup   = OptionValue["WarmupFrac"],
-   counts, state, raw, outcomes, r, nWarmup},
+RunNumericalMCMC[allStates_List, numAlg_, OptionsPattern[]] := Module[
+  {nSteps  = OptionValue["NSteps"],
+   nWarmup = Round[OptionValue["NSteps"] * OptionValue["WarmupFrac"]],
+   state, counts},
 
-  nWarmup = Round[nSteps * warmup];
-  state   = RandomChoice[allStates];
-  counts  = AssociationThread[allStates -> 0];
+  state  = RandomChoice[allStates];
+  counts = AssociationThread[allStates -> 0];
 
-  step[] := Module[{rb, res2, outs, u, cumP, ns},
-    rb[] := RandomInteger[1];
-    res2 = RunWithBits[alg, state, Table[rb[], {OptionValue["NSteps"]}]];
-    (* For numerical run, just call alg with live random bits *)
-    With[{liveRb = Function[{}, RandomInteger[1]]},
-      raw = alg[state, liveRb];
-      (* normalise to outcome list *)
-      outs = If[ListQ[raw] && Length[raw] > 0 && ListQ[raw[[1]]],
+  (* Single MCMC step: call numAlg with fresh random bits,
+     then sample from the returned outcome distribution. *)
+  mcmcStep[] := Module[
+    {liveRb, raw, outs, u, cumP, ns},
+    liveRb[] := RandomInteger[1];
+    raw  = numAlg[state, liveRb];
+    outs = If[ListQ[raw] && Length[raw] > 0 && ListQ[raw[[1]]],
                raw, {{1, raw}}];
-      (* sample from outcome distribution *)
-      u = RandomReal[];
-      cumP = 0.;
-      ns = Last[outs][[2]]; (* fallback *)
-      Do[
-        cumP += N[out[[1]]];
-        If[u < cumP, ns = out[[2]]; Break[]],
-        {out, outs}
-      ];
-      state = ns
-    ]
+    (* Weighted sample from outcome list *)
+    u    = RandomReal[];
+    cumP = 0.;
+    ns   = outs[[-1, 2]];   (* fallback: last outcome *)
+    Do[
+      cumP += N[out[[1]]];
+      If[u < cumP, ns = out[[2]]; Break[]],
+      {out, outs}
+    ];
+    state = ns
   ];
 
-  Do[step[], {nWarmup}];
-  Do[step[]; If[KeyExistsQ[counts, state], counts[state]++], {nSteps - nWarmup}];
+  Do[mcmcStep[], {nWarmup}];
+  Do[
+    mcmcStep[];
+    If[KeyExistsQ[counts, state],
+      counts[state]++,
+      (* state not in allStates -- count as error but don't crash *)
+      Print["  WARNING: numerical MCMC produced unexpected state ", state]
+    ],
+    {nSteps - nWarmup}
+  ];
 
   counts
 ]
 
 (* ----------------------------------------------------------------
    BoltzmannWeights
-   Compute normalised Boltzmann probabilities for each state.
-   numEnergy[state] must return a plain number.
+   Normalised Boltzmann probabilities.
+   numEnergy[s] must be fully numeric and already include beta,
+   so the weight is Exp[-numEnergy[s]].
    ---------------------------------------------------------------- *)
 BoltzmannWeights[allStates_List, numEnergy_] := Module[
-  {es, ws, Z},
-  es = numEnergy /@ allStates;
-  ws = N[Exp[-es]];
+  {ws, Z},
+  ws = N[Exp[-numEnergy[#]] & /@ allStates];
   Z  = Total[ws];
   AssociationThread[allStates -> ws / Z]
 ]
 
 (* ----------------------------------------------------------------
    RunFullCheck
-   Top-level entry point.  Runs symbolic + numerical checks and
-   prints a self-contained report.
+   Top-level entry point.  Prints a self-contained report.
+
+   Arguments:
+     allStates  -- list of all valid states
+     symAlg     -- algorithm for symbolic check (uses MetropolisProb)
+     numAlg     -- algorithm for numerical check (fully numeric)
+     symEnergy  -- bare energy function, symbolic in couplings
+     numEnergy  -- numeric energy function WITH beta folded in
    ---------------------------------------------------------------- *)
 Options[RunFullCheck] = Join[
   Options[BuildTransitionMatrix],
@@ -241,39 +266,39 @@ Options[RunFullCheck] = Join[
   {"SystemName" -> "Unnamed system"}
 ]
 
-RunFullCheck[allStates_List, alg_, symEnergy_, numEnergy_, OptionsPattern[]] :=
-Module[
+RunFullCheck[allStates_List, symAlg_, numAlg_,
+             symEnergy_, numEnergy_, OptionsPattern[]] := Module[
   {name = OptionValue["SystemName"],
    n    = Length[allStates],
-   matrix, violations, counts, bw, simFreq, kl, row},
+   matrix, violations, counts, bw, simFreq, kl},
 
-  printSep[c_] := Print[StringRepeat[c, 62]];
+  sep[c_] := Print[StringRepeat[c, 62]];
 
-  printSep["="];
+  sep["="];
   Print["DETAILED BALANCE CHECKER"];
-  printSep["="];
+  sep["="];
   Print["System : ", name];
   Print["States : ", n, " -- ", allStates];
-  printSep["="];
+  sep["="];
 
   (* ---- 1. Symbolic check ---- *)
   Print["\n[1/2] SYMBOLIC DETAILED BALANCE CHECK"];
-  printSep["-"];
+  sep["-"];
   Print["Building decision trees for all ", n, " states..."];
 
-  matrix = BuildTransitionMatrix[allStates, alg,
+  matrix = BuildTransitionMatrix[allStates, symAlg,
     "MaxBitDepth" -> OptionValue["MaxBitDepth"],
     "TimeLimit"   -> OptionValue["TimeLimit"],
     "Verbose"     -> OptionValue["Verbose"]
   ];
 
-  Print["Transition matrix built. Non-zero entries: ", Length[matrix]];
-  Print["Checking ", Binomial[n, 2], " state pairs for detailed balance..."];
+  Print["Transition matrix: ", Length[matrix], " non-zero entries."];
+  Print["Checking ", Binomial[n, 2], " pairs for detailed balance..."];
 
   violations = CheckDetailedBalance[matrix, allStates, symEnergy];
 
   If[violations === {},
-    Print["\n  RESULT: PASS -- all ", Binomial[n,2],
+    Print["\n  RESULT: PASS -- all ", Binomial[n, 2],
           " pairs satisfy detailed balance exactly."],
     Print["\n  RESULT: FAIL -- ", Length[violations], " violation(s):"];
     Scan[Function[v,
@@ -283,43 +308,42 @@ Module[
 
   (* ---- 2. Numerical check ---- *)
   Print["\n[2/2] NUMERICAL MCMC CHECK"];
-  printSep["-"];
+  sep["-"];
   Print["Running ", OptionValue["NSteps"], " MCMC steps..."];
 
-  counts = RunNumericalMCMC[allStates, alg, numEnergy,
-    "NSteps"     -> OptionValue["NSteps"],
-    "WarmupFrac" -> OptionValue["WarmupFrac"]
-  ];
+  counts  = RunNumericalMCMC[allStates, numAlg,
+              "NSteps"     -> OptionValue["NSteps"],
+              "WarmupFrac" -> OptionValue["WarmupFrac"]];
   bw      = BoltzmannWeights[allStates, numEnergy];
-  simFreq = # / Total[counts] & /@ counts;
+  simFreq = N[# / Total[counts]] & /@ counts;
 
   Print["\n  ", PaddedForm["State", 20],
-              PaddedForm["Simulated", 12],
-              PaddedForm["Boltzmann", 12]];
+               PaddedForm["Simulated", 12],
+               PaddedForm["Boltzmann", 12]];
   Print["  ", StringRepeat["-", 44]];
   Scan[Function[s,
     Print["  ", PaddedForm[ToString[s], 20],
-               PaddedForm[NumberForm[N@simFreq[s], {4,4}], 12],
-               PaddedForm[NumberForm[N@bw[s],      {4,4}], 12]]
+               PaddedForm[NumberForm[simFreq[s], {5, 4}], 12],
+               PaddedForm[NumberForm[N@bw[s],    {5, 4}], 12]]
   ], allStates];
 
   (* KL divergence D(sim || Boltzmann) *)
-  kl = Total[Table[
-    With[{p = N@simFreq[s], q = N@bw[s]},
-      If[p > 0 && q > 0, p Log[p/q], 0.]],
-    {s, allStates}]];
+  kl = Total@Table[
+    With[{p = simFreq[s], q = N@bw[s]},
+      If[p > 0 && q > 0, p * Log[p / q], 0.]],
+    {s, allStates}];
 
-  Print["\n  KL divergence (sim || Boltzmann) = ", NumberForm[kl, {5,5}]];
+  Print["\n  KL divergence (sim || Boltzmann) = ", NumberForm[kl, {6, 5}]];
   Print["  Numerical verdict: ",
-        If[kl < 0.02, "CONSISTENT with Boltzmann.",
-                      "WARNING -- significant deviation from Boltzmann."]];
+    If[kl < 0.02,
+       "CONSISTENT with Boltzmann.",
+       "WARNING -- significant deviation from Boltzmann."]];
 
-  printSep["="];
+  sep["="];
   Print["END OF REPORT\n"];
 
-  <|"matrix" -> matrix, "violations" -> violations,
-    "counts" -> counts, "boltzmann" -> bw|>
+  <|"matrix"     -> matrix,
+    "violations" -> violations,
+    "counts"     -> counts,
+    "boltzmann"  -> bw|>
 ]
-
-End[]
-EndPackage[]
