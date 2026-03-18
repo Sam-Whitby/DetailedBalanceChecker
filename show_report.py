@@ -2,7 +2,7 @@
 """
 DetailedBalanceChecker – Python visualisation
 Usage: python3 show_report.py <report.json>
-Saves a PNG and prints its path to stdout.
+Saves a high-resolution PNG and prints its path to stdout.
 """
 
 import sys, json
@@ -15,6 +15,7 @@ from collections import defaultdict, deque
 
 GREEN = '#1a7a1a'
 RED   = '#8b0000'
+BLUE  = '#3a6bb5'
 
 # ── main ─────────────────────────────────────────────────────────────────────
 
@@ -36,86 +37,117 @@ def main():
     mat_raw   = data["matrix"]
     tree_raw  = data["treeData"]
     alg_code  = data.get("algCode", "")
-    n         = len(states)
 
-    fig = plt.figure(figsize=(18, 13))
+    n          = len(states)
+    code_lines = alg_code.rstrip('\n').split('\n')
+    n_code     = len(code_lines)
+
+    # ── Figure sizing ─────────────────────────────────────────────────────────
+    # Each code line at fontsize 8 needs ~0.155 in (including line spacing)
+    BANNER_H = 0.55          # inches reserved for banner text at top
+    TOP_H    = 4.0           # row 0: scatter + DB table
+    TREE_H   = 7.0           # row 1: decision trees (generous height)
+    MAT_H    = 2.8           # row 2: transition matrix (full width)
+    CODE_H   = max(3.5, n_code * 0.155 + 0.9)
+    FIG_H    = TOP_H + TREE_H + MAT_H + CODE_H + BANNER_H
+
+    FIG_W    = 20.0          # wider to give matrix cells more room
+
+    fig = plt.figure(figsize=(FIG_W, FIG_H))
     fig.patch.set_facecolor('#f4f6f9')
 
-    # Banner
+    # ── Banner ────────────────────────────────────────────────────────────────
     banner_col = GREEN if passed else RED
     verdict    = '✓  DETAILED BALANCE:  PASS' if passed else '✗  DETAILED BALANCE:  FAIL'
-    fig.text(0.5, 0.975,
+    banner_y   = 1.0 - (BANNER_H / 2) / FIG_H   # centred in banner strip
+    fig.text(0.5, banner_y,
              f'{name}     {verdict}',
-             ha='center', va='top', fontsize=13, fontweight='bold', color='white',
+             ha='center', va='center', fontsize=14, fontweight='bold', color='white',
              bbox=dict(boxstyle='round,pad=0.45', facecolor=banner_col, alpha=1.0))
 
-    # Grid: 3 rows × 3 cols
-    gs = gridspec.GridSpec(3, 3, figure=fig,
-                           height_ratios=[3.5, 4.5, 3],
-                           hspace=0.45, wspace=0.30,
-                           top=0.91, bottom=0.04, left=0.04, right=0.97)
+    # ── GridSpec ──────────────────────────────────────────────────────────────
+    top_frac   = 1.0 - BANNER_H / FIG_H - 0.005  # leave room for banner
+    gs = gridspec.GridSpec(
+        4, 3, figure=fig,
+        height_ratios=[TOP_H, TREE_H, MAT_H, CODE_H],
+        hspace=0.38, wspace=0.28,
+        top=top_frac, bottom=0.008, left=0.04, right=0.97)
 
-    ax_freq  = fig.add_subplot(gs[0, :2])
-    ax_code  = fig.add_subplot(gs[0, 2])
-    n_trees  = min(n, 3)
-    ax_trees = [fig.add_subplot(gs[1, i]) for i in range(n_trees)]
+    ax_sc   = fig.add_subplot(gs[0, :2])   # scatter — 2/3 width
+    ax_db   = fig.add_subplot(gs[0, 2])    # DB table — 1/3 width
+    n_trees = min(n, 3)
+    ax_tr   = [fig.add_subplot(gs[1, i]) for i in range(n_trees)]
     for i in range(n_trees, 3):
         fig.add_subplot(gs[1, i]).axis('off')
-    ax_db    = fig.add_subplot(gs[2, :2])
-    ax_mat   = fig.add_subplot(gs[2, 2])
+    ax_mat  = fig.add_subplot(gs[2, :])    # matrix — full width
+    ax_code = fig.add_subplot(gs[3, :])    # code   — full width
 
-    draw_freq_chart(ax_freq, states, sim_freq, boltzmann, kl)
-    draw_code_panel(ax_code, alg_code)
-    for i in range(n_trees):
-        s     = states[i]
-        paths = tree_raw.get(str(s), [])
-        draw_tree(ax_trees[i], s, paths, states)
+    # ── Draw panels ───────────────────────────────────────────────────────────
+    draw_scatter(ax_sc, states, sim_freq, boltzmann, kl)
     draw_db_table(ax_db, db_pairs)
+    for i in range(n_trees):
+        draw_tree(ax_tr[i], states[i],
+                  tree_raw.get(str(states[i]), []), states)
     draw_matrix(ax_mat, states, mat_raw)
+    draw_code_panel(ax_code, alg_code)
 
+    # ── Save ─────────────────────────────────────────────────────────────────
     out_path = sys.argv[1].replace('.json', '.png')
-    fig.savefig(out_path, dpi=130, bbox_inches='tight',
+    fig.savefig(out_path, dpi=250, bbox_inches='tight',
                 facecolor=fig.get_facecolor())
     print(out_path)
 
 
-# ── Frequency bar chart ───────────────────────────────────────────────────────
+# ── Scatter plot: simulated vs Boltzmann ──────────────────────────────────────
 
-def draw_freq_chart(ax, states, sim_freq, boltzmann, kl):
-    x     = np.arange(len(states))
-    w     = 0.35
-    ax.bar(x - w/2, sim_freq,  w, label='Simulated',  color='#3474cc', alpha=0.85, zorder=3)
-    ax.bar(x + w/2, boltzmann, w, label='Boltzmann',   color='#cc3333', alpha=0.85, zorder=3)
-    ax.set_xticks(x)
-    ax.set_xticklabels([f'State {s}' for s in states], fontsize=10)
-    ax.set_ylabel('Probability', fontsize=10)
-    ax.set_title('Simulated vs Boltzmann State Frequencies', fontsize=11, fontweight='bold')
-    ax.legend(fontsize=9)
-    ax.set_ylim(0, max(max(sim_freq), max(boltzmann)) * 1.28)
-    ax.grid(axis='y', alpha=0.35, zorder=0)
+def draw_scatter(ax, states, sim_freq, boltzmann, kl):
+    x  = np.array(boltzmann, dtype=float)
+    y  = np.array(sim_freq,  dtype=float)
+    hi = max(x.max(), y.max()) * 1.18
+    lo = 0.0
+
+    # y = x reference line
+    ax.plot([lo, hi], [lo, hi], color='#555', linestyle='--', lw=1.8,
+            alpha=0.6, label='y = x  (perfect detailed balance)', zorder=1)
+
+    # One point per state
+    palette = plt.cm.tab10(np.linspace(0, 0.7, len(states)))
+    for i, s in enumerate(states):
+        ax.scatter(x[i], y[i], s=160, color=palette[i], zorder=5,
+                   edgecolors='white', linewidths=1.0)
+        ax.annotate(f'  State {s}', (x[i], y[i]),
+                    textcoords='offset points', xytext=(8, 4),
+                    fontsize=10, color=palette[i], fontweight='bold')
+
+    # Pearson r
+    if len(x) > 1 and x.std() > 0 and y.std() > 0:
+        r = float(np.corrcoef(x, y)[0, 1])
+        if r > 0.999:
+            r_col, r_note = GREEN, '(excellent)'
+        elif r > 0.98:
+            r_col, r_note = '#886600', '(moderate)'
+        else:
+            r_col, r_note = RED, '(poor)'
+        ax.text(0.04, 0.96,
+                f'Pearson  r = {r:.6f}  {r_note}',
+                transform=ax.transAxes, fontsize=10, fontweight='bold',
+                color=r_col, va='top')
+
+    ax.set_xlabel('Boltzmann probability (theoretical)', fontsize=11)
+    ax.set_ylabel('Simulated frequency (MCMC)', fontsize=11)
+    ax.set_title('MCMC vs Boltzmann — state frequencies', fontsize=12, fontweight='bold')
+    ax.set_xlim(lo, hi)
+    ax.set_ylim(lo, hi)
+    ax.set_aspect('equal', adjustable='box')
+    ax.legend(fontsize=9, loc='lower right')
+    ax.grid(alpha=0.3, zorder=0)
     ax.set_facecolor('#fafbff')
 
     kl_col = GREEN if kl < 0.02 else RED
-    kl_str = '✓ Consistent with Boltzmann' if kl < 0.02 else '✗ Significant deviation'
-    ax.text(0.97, 0.95, f'KL = {kl:.5f}   {kl_str}',
-            transform=ax.transAxes, ha='right', va='top',
+    ax.text(0.97, 0.04,
+            f'KL divergence = {kl:.6f}',
+            transform=ax.transAxes, ha='right', va='bottom',
             fontsize=9, color=kl_col, fontweight='bold')
-
-
-# ── Algorithm source code panel ───────────────────────────────────────────────
-
-def draw_code_panel(ax, code):
-    ax.axis('off')
-    ax.set_title('Algorithm Under Test', fontsize=10, fontweight='bold', pad=4)
-    lines = code.split('\n')
-    MAX   = 26
-    if len(lines) > MAX:
-        lines = lines[:MAX] + [f'  … ({len(lines) - MAX} more lines)']
-    ax.text(0.03, 0.97, '\n'.join(lines),
-            transform=ax.transAxes, fontsize=6.0, fontfamily='monospace',
-            verticalalignment='top',
-            bbox=dict(boxstyle='round,pad=0.5',
-                      facecolor='#fffff0', edgecolor='#ccccaa', alpha=0.95))
 
 
 # ── Decision tree ─────────────────────────────────────────────────────────────
@@ -123,15 +155,13 @@ def draw_code_panel(ax, code):
 def _bkey(bits):
     return 'root' if not bits else 'b' + ''.join(map(str, bits))
 
-def _oid(bits, i):
-    return _bkey(bits) + f'o{i}'
-
 def build_tree_graph(state, paths):
-    nodes    = {}
-    edges    = []
-    edge_lbl = {}
+    """Return (nodes, edges, edge_labels) for one starting state."""
+    nodes    = {}   # id -> {label, color, round}
+    edges    = []   # list of (u, v)
+    edge_lbl = {}   # (u, v) -> bit label string
 
-    nodes['root'] = dict(label=f'S={state}', color='#3a6bb5', tc='white', sq=False)
+    nodes['root'] = dict(label=f'S={state}', color=BLUE, round=True)
 
     all_pfx  = set()
     leaf_pfx = set()
@@ -141,12 +171,10 @@ def build_tree_graph(state, paths):
         for k in range(len(bits)):
             all_pfx.add(bits[:k+1])
 
-    internal_pfx = all_pfx - leaf_pfx
-
-    for pfx in internal_pfx:
-        nodes[_bkey(pfx)] = dict(label='?', color='#666', tc='white', sq=False)
+    for pfx in all_pfx - leaf_pfx:
+        nodes[_bkey(pfx)] = dict(label='?', color='#555', round=True)
     for pfx in leaf_pfx:
-        nodes[_bkey(pfx)] = dict(label='↓', color='#aaa', tc='white', sq=False)
+        nodes[_bkey(pfx)] = dict(label='↓', color='#999', round=True)
 
     for pfx in all_pfx:
         parent = _bkey(pfx[:-1])
@@ -158,13 +186,11 @@ def build_tree_graph(state, paths):
         bits    = tuple(path['bits'])
         leaf_id = _bkey(bits)
         for i, out in enumerate(path['outcomes']):
-            oid   = _oid(bits, i)
+            oid   = leaf_id + f'o{i}'
             dest  = out['state']
             prob  = out['probStr']
-            if len(prob) > 14:
-                prob = prob[:11] + '…'
-            color = '#2e9e50' if dest != state else '#d47b10'
-            nodes[oid] = dict(label=f'→{dest}\n{prob}', color=color, tc='white', sq=True)
+            color = '#2a9e48' if dest != state else '#d47b10'
+            nodes[oid] = dict(label=f'→{dest}\n{prob}', color=color, round=False)
             edges.append((leaf_id, oid))
 
     return nodes, edges, edge_lbl
@@ -187,70 +213,70 @@ def bfs_layout(edges, root):
     max_lv = max(levels) if levels else 0
     pos    = {}
     for lv, lvnodes in levels.items():
-        n = len(lvnodes)
+        nn = len(lvnodes)
         for i, nd in enumerate(lvnodes):
-            pos[nd] = ((i + 0.5) / n,
-                       1.0 - lv / (max_lv + 1) if max_lv else 0.8)
+            pos[nd] = ((i + 0.5) / nn,
+                       1.0 - lv / (max_lv + 1) if max_lv else 0.85)
     return pos
 
 
 def draw_tree(ax, state, paths, all_states):
     ax.axis('off')
-    ax.set_title(f'State {state}', fontsize=9, fontweight='bold', pad=2)
+    ax.set_xlim(0, 1)
+    ax.set_ylim(-0.05, 1.10)
     ax.set_facecolor('#f7f8fc')
+    ax.set_title(f'State {state}', fontsize=11, fontweight='bold', pad=5)
 
     if not paths:
         ax.text(0.5, 0.5, '(no paths)', ha='center', va='center',
-                transform=ax.transAxes, color='gray', fontsize=9)
+                transform=ax.transAxes, color='gray', fontsize=10)
         return
 
     nodes, edges, edge_lbl = build_tree_graph(state, paths)
     pos = bfs_layout(edges, 'root')
 
-    ax.set_xlim(-0.08, 1.08)
-    ax.set_ylim(-0.15, 1.12)
-
-    # Edges
+    # Draw edges first (lower zorder)
     for u, v in edges:
         if u not in pos or v not in pos:
             continue
         x0, y0 = pos[u]
         x1, y1 = pos[v]
-        ax.annotate('', xy=(x1, y1), xytext=(x0, y0),
-                    arrowprops=dict(arrowstyle='-|>', color='#888',
-                                   lw=0.9, mutation_scale=8), zorder=1)
+        ax.annotate(
+            '', xy=(x1, y1), xytext=(x0, y0),
+            xycoords='data', textcoords='data',
+            arrowprops=dict(arrowstyle='-|>', color='#777',
+                            lw=1.1, mutation_scale=12,
+                            shrinkA=12, shrinkB=12),
+            annotation_clip=False, zorder=1)
         lbl = edge_lbl.get((u, v))
         if lbl is not None:
-            ax.text((x0+x1)/2 + 0.04, (y0+y1)/2, lbl,
-                    fontsize=7, color='#334499', fontweight='bold',
-                    ha='left', va='center', zorder=3)
+            ax.text((x0 + x1) / 2 + 0.03, (y0 + y1) / 2,
+                    lbl, fontsize=9, color='#334499',
+                    fontweight='bold', ha='left', va='center',
+                    clip_on=False, zorder=2)
 
-    # Nodes
+    # Draw nodes as auto-sized text boxes (clip_on=False so label never gets cut)
     for nid, info in nodes.items():
         if nid not in pos:
             continue
         x, y = pos[nid]
-        if info['sq']:
-            rect = plt.Rectangle((x - 0.07, y - 0.045), 0.14, 0.09,
-                                  facecolor=info['color'], edgecolor='white',
-                                  lw=0.8, zorder=4, transform=ax.transData)
-            ax.add_patch(rect)
-            ax.text(x, y, info['label'], ha='center', va='center',
-                    fontsize=5.5, color=info['tc'], fontweight='bold', zorder=5)
-        else:
-            circ = plt.Circle((x, y), 0.045,
-                               facecolor=info['color'], edgecolor='white',
-                               lw=0.8, zorder=4)
-            ax.add_patch(circ)
-            ax.text(x, y, info['label'], ha='center', va='center',
-                    fontsize=6, color=info['tc'], fontweight='bold', zorder=5)
+        # Outcome nodes (rounded rectangle) carry two-line labels
+        bs = 'round,pad=0.38' if info['round'] else 'round,pad=0.32'
+        ax.text(x, y, info['label'],
+                ha='center', va='center',
+                fontsize=8, fontweight='bold', color='white',
+                clip_on=False, zorder=5,
+                linespacing=1.4,
+                bbox=dict(boxstyle=bs,
+                          facecolor=info['color'],
+                          edgecolor='white', lw=1.2))
 
 
 # ── Detailed balance pair table ───────────────────────────────────────────────
 
 def draw_db_table(ax, db_pairs):
     ax.axis('off')
-    ax.set_title('Detailed Balance Check', fontsize=10, fontweight='bold', pad=4)
+    ax.set_title('Detailed Balance\nCheck', fontsize=11, fontweight='bold', pad=4)
     if not db_pairs:
         ax.text(0.5, 0.5, '(no pairs)', ha='center', va='center',
                 transform=ax.transAxes)
@@ -261,52 +287,78 @@ def draw_db_table(ax, db_pairs):
     for p in db_pairs:
         ok = p['pass']
         rows.append([str(p['i']), str(p['j']),
-                     'T(i→j)·π(i) = T(j→i)·π(j) ?' ,
                      '✓ PASS' if ok else '✗ FAIL'])
         bg = '#d4f0d4' if ok else '#f0d4d4'
-        rcolors.append(['#fff', '#fff', bg, bg])
+        rcolors.append(['#ffffff', '#ffffff', bg])
 
     tbl = ax.table(cellText=rows,
-                   colLabels=['i', 'j', 'Detailed balance', 'Result'],
+                   colLabels=['i', 'j', 'Result'],
                    cellColours=rcolors, cellLoc='center', loc='center')
     tbl.auto_set_font_size(False)
-    tbl.set_fontsize(10)
-    tbl.scale(1.0, 1.6)
+    tbl.set_fontsize(11)
+    tbl.scale(1.0, 1.8)
     for (r, c), cell in tbl.get_celld().items():
         if r == 0:
             cell.set_facecolor('#c8d8f0')
             cell.set_text_props(fontweight='bold')
-        if c == 3 and r > 0:
+        if c == 2 and r > 0:
             cell.set_text_props(fontweight='bold')
 
 
-# ── Transition matrix table ───────────────────────────────────────────────────
+# ── Transition matrix (full width, full expressions) ──────────────────────────
+
+def _abbrev(s):
+    """Light abbreviation: replace Mathematica escapes, keep as much as useful."""
+    s = s.replace('\\[Beta]', 'β').replace('Piecewise', 'Pw')
+    s = s.replace('E^(-β', 'e^{-β').replace('E^(β', 'e^{β')
+    return s
+
 
 def draw_matrix(ax, states, mat_raw):
     ax.axis('off')
-    ax.set_title('Transition Matrix  T[i→j]', fontsize=10, fontweight='bold', pad=4)
+    ax.set_title('Symbolic Transition Matrix  T[i→j]'
+                 '   (Piecewise = Metropolis acceptance prob; β kept symbolic)',
+                 fontsize=11, fontweight='bold', pad=5)
 
     n     = len(states)
     cells = [['' for _ in range(n)] for _ in range(n)]
     for entry in mat_raw:
         fi = states.index(entry['from'])
         ti = states.index(entry['to'])
-        s  = entry['str']
-        cells[fi][ti] = (s[:10] + '…') if len(s) > 12 else s
+        cells[fi][ti] = _abbrev(entry['str'])
 
-    tbl = ax.table(cellText=cells,
-                   rowLabels=[f'{s}→' for s in states],
-                   colLabels=[f'→{s}' for s in states],
-                   cellLoc='center', loc='center')
-    tbl.auto_set_font_size(False)
-    tbl.set_fontsize(8)
-    tbl.scale(1.0, 1.6)
+    tbl = ax.table(
+        cellText=cells,
+        rowLabels=[f'{s} →' for s in states],
+        colLabels=[f'→ {s}' for s in states],
+        cellLoc='center', loc='center')
+    tbl.auto_set_font_size(True)
+    tbl.scale(1.0, 2.2)
     for (r, c), cell in tbl.get_celld().items():
         if r == 0 or c == -1:
             cell.set_facecolor('#c8d8f0')
-            cell.set_text_props(fontweight='bold', fontsize=8)
+            cell.set_text_props(fontweight='bold')
         elif r > 0 and c >= 0 and r - 1 == c:
             cell.set_facecolor('#fffde0')
+
+
+# ── Full algorithm source code ────────────────────────────────────────────────
+
+def draw_code_panel(ax, code):
+    ax.axis('off')
+    ax.set_facecolor('#fffff8')
+    ax.set_title('Algorithm Under Test  (full source)',
+                 fontsize=11, fontweight='bold', pad=5)
+    # Position at top-left of axes; clip_on=False so tall code is never cut
+    ax.text(0.012, 0.988, code,
+            transform=ax.transAxes,
+            fontsize=8, fontfamily='monospace',
+            verticalalignment='top', horizontalalignment='left',
+            clip_on=False,
+            linespacing=1.45,
+            bbox=dict(boxstyle='round,pad=0.55',
+                      facecolor='#fffff0', edgecolor='#ccccaa',
+                      alpha=0.97, lw=0.8))
 
 
 if __name__ == '__main__':
