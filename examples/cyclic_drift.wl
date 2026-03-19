@@ -36,5 +36,5 @@ energy$cd[s_Integer] := eps$cd[[s]]
    Algorithm: always hop clockwise -- deterministic, no random bits.
    The BFS produces a single leaf per state: {} -> right(state).
    ================================================================ *)
-CyclicDrift[state_Integer, readBit_, acceptTest_] :=
+CyclicDrift[state_Integer] :=
   Mod[state, L$cd] + 1   (* always move to next site clockwise *)

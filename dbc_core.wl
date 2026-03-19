@@ -146,18 +146,16 @@ BuildTransitionMatrix[allStates_List, alg_, opts : OptionsPattern[]] :=
 
 (* ----------------------------------------------------------------
    RunWithBitsAT
-   Like RunWithBits but the algorithm takes THREE arguments:
-     alg[state, readBit, acceptTest]
+   Runs the algorithm on a fixed bit tape, intercepting all native
+   Mathematica random calls (RandomReal, RandomInteger, RandomChoice).
 
-   readBit[]   – returns next bit (0/1); throws $OutOfBits if list exhausted.
-   acceptTest[p] – consumes the next bit; multiplies the accumulated
-                   path weight by p (bit=1, accept) or 1-p (bit=0, reject);
-                   returns 1 (accepted) or 0 (rejected).
-
-   The algorithm returns a single next state (integer/symbol).
+   The algorithm takes ONE argument:  alg[state]
+   It uses native random calls, which are shadowed via Block to be
+   deterministic given the bit tape.
 
    Returns  {nextState, pathWeight}  or  $OutOfBits.
-   pathWeight = prod_{readBit calls}(1/2) * prod_{acceptTest calls}(p or 1-p)
+   pathWeight = prod_{RandomInteger calls}(1/2) *
+                prod_{RandomReal comparisons}(p or 1-p)
    ---------------------------------------------------------------- *)
 RunWithBitsAT[alg_, state_, bits_List] := Module[
   {pos = 0, weight = 1, readBit, acceptTest, result},
@@ -181,9 +179,9 @@ RunWithBitsAT[alg_, state_, bits_List] := Module[
   );
   (* Run the algorithm with random-call interception.
      RandomReal[], Random[], RandomInteger[], and RandomChoice[] are
-     shadowed via Block so algorithms written with native random calls
-     are analysed correctly without modification.
-     RandomVariate and similar unsupported calls throw $dbc$cantHandle. *)
+     shadowed via Block so native random calls are made deterministic
+     by the bit tape. RandomVariate and similar unsupported calls
+     throw $dbc$cantHandle. *)
   result = Catch[
     Block[{
       (* RandomReal[] / Random[] → deferred comparison token that carries
@@ -261,7 +259,7 @@ RunWithBitsAT[alg_, state_, bits_List] := Module[
       RandomWord       = Function[Throw[$dbc$cantHandle["RandomWord"],       $dbc$tag]],
       RandomPrime      = Function[Throw[$dbc$cantHandle["RandomPrime"],      $dbc$tag]]
     },
-    alg[state, readBit, acceptTest]
+    alg[state]
     ],
     $dbc$tag,
     Function[{ex}, ex]   (* return thrown value as-is *)
@@ -316,7 +314,7 @@ $dbc$rand /: GreaterEqual[p_, $dbc$rand[at_]] := (at[p] == 1)
    BuildTreeAT
    BFS over bit sequences, starting from seedState.
    New states are discovered automatically as algorithm outputs.
-   Uses the acceptTest interface (alg takes 3 arguments).
+   The algorithm takes ONE argument: alg[state].
 
    Returns  Association[ state -> { {bits, nextState, pathWeight}, … } ]
    ---------------------------------------------------------------- *)
@@ -437,30 +435,17 @@ Options[RunNumericalMCMCAT] = {
 RunNumericalMCMCAT[allStates_List, alg_, numBeta_, OptionsPattern[]] := Module[
   {nSteps  = OptionValue["NSteps"],
    nWarmup = Round[OptionValue["NSteps"] * OptionValue["WarmupFrac"]],
-   state, counts, doStep},
+   state, counts},
 
   state  = RandomChoice[allStates];
   counts = AssociationThread[allStates -> 0];
 
-  (* Use Function (anonymous) to avoid Module DownValue leakage.
-     readBit and acceptTest are passed as closures; \[Beta] is set
-     via Block so MetropolisProb evaluates numerically. *)
-  doStep = Function[{},
-    Module[{rb, at, ns},
-      rb = Function[{}, RandomInteger[1]];
-      at = Function[{p}, If[RandomReal[] < N[p], 1, 0]];
-      Block[{\[Beta] = numBeta},
-        ns = alg[state, rb, at]
-      ];
-      If[!MemberQ[allStates, ns],
-        Print["  WARNING: unexpected state from alg: ", ns]];
-      state = ns
-    ]
-  ];
-
-  Do[doStep[], {nWarmup}];
+  (* \[Beta] is set via Block so MetropolisProb evaluates numerically.
+     The algorithm uses native random calls (RandomReal[], RandomInteger[],
+     etc.) which are NOT intercepted here -- they run as genuine random calls. *)
+  Do[Block[{\[Beta] = numBeta}, state = alg[state]], {nWarmup}];
   Do[
-    doStep[];
+    Block[{\[Beta] = numBeta}, state = alg[state]];
     If[KeyExistsQ[counts, state], counts[state]++],
     {nSteps - nWarmup}];
   counts
@@ -692,9 +677,11 @@ ExportReportJSON[args_Association, outPath_String] := Module[
   n          = Length[allStates];
   violPairs  = If[violations === {}, {}, #["pair"] & /@ violations];
 
-  treeJSON = Association @ Table[
-    ToString[s] -> ($leafToJSON /@ treeData[s]),
-    {s, allStates}];
+  (* Tree data as an ordered list (same order as allStates) so Python
+     can look up by index rather than by state key string, which avoids
+     mismatches between Mathematica's ToString and Python's str() for
+     rational and list-valued states. *)
+  treeJSON = Table[($leafToJSON /@ treeData[s]), {s, allStates}];
 
   matJSON = Flatten[Table[
     <|"from" -> allStates[[i]],
@@ -1259,7 +1246,18 @@ RunFullCheck[seedState_, alg_, energy_, numBeta_?NumericQ,
               ToString[InputForm[DownValues[alg]], OutputForm]];
 
   (* ---- Safety checks ---- *)
-  If[Head[alg] === Symbol, CheckAlgorithmSafety[alg]];
+  If[Head[alg] === Symbol,
+    If[!CheckAlgorithmSafety[alg],
+      Print["\n", StringRepeat["=", 62]];
+      Print["ANALYSIS FAILED -- algorithm contains unsafe calls."];
+      Print[StringRepeat["=", 62]];
+      Return[<|"pass" -> False,
+               "error" -> "algorithm contains calls that cannot be intercepted",
+               "allStates" -> {}, "matrix" -> <||>,
+               "violations" -> {}, "counts" -> <||>,
+               "boltzmann" -> <||>, "kl" -> Indeterminate|>]
+    ]
+  ];
   If[Head[energy] === Symbol,
     If[!CheckEnergySafety[energy],
       Print["\n", StringRepeat["=", 62]];

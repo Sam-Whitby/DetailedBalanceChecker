@@ -34,27 +34,27 @@ Get[DirectoryName[$InputFileName] <> "variable_bit_pass.wl"]
 (* ================================================================
    Biased algorithm: bit1=1, bit2=0 hops right unconditionally
    ================================================================ *)
-Biased[state_Integer, readBit_, acceptTest_] := Module[
+Biased[state_Integer] := Module[
   {b1, b2, b3, nbr, dE},
-  b1 = readBit[];
+  b1 = RandomInteger[];
   If[b1 == 0,
 
     (* Standard hop: unchanged from PASS *)
-    b2  = readBit[];
+    b2  = RandomInteger[];
     nbr = If[b2 == 0, leftOf$vb[state], rightOf$vb[state]];
     dE  = energy$vb[nbr] - energy$vb[state];
-    If[acceptTest[MetropolisProb[dE]] == 1, nbr, state],
+    If[RandomReal[] < MetropolisProb[dE], nbr, state],
 
-    (* Lazy branch -- bit2=0 now hops right unconditionally *)
-    b2 = readBit[];
+    (* Lazy branch -- second 0 now hops right unconditionally *)
+    b2 = RandomInteger[];
     If[b2 == 0,
       (* BUG: always move clockwise, no energy check *)
       rightOf$vb[state],
-      (* bit2=1: fair hop, unchanged from PASS *)
-      b3  = readBit[];
+      (* Second 1: fair hop, unchanged from PASS *)
+      b3  = RandomInteger[];
       nbr = If[b3 == 0, leftOf$vb[state], rightOf$vb[state]];
       dE  = energy$vb[nbr] - energy$vb[state];
-      If[acceptTest[MetropolisProb[dE]] == 1, nbr, state]
+      If[RandomReal[] < MetropolisProb[dE], nbr, state]
     ]
   ]
 ]

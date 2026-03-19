@@ -32,24 +32,24 @@ energy$kn[s_Integer] := eps$kn[[s]]
    MetropolisProb keeps \[Beta] symbolic during the symbolic check;
    Block[\[Beta]=numBeta] makes it numeric during MCMC.
    ================================================================ *)
-KawasakiNew[state_Integer, readBit_, acceptTest_] := Module[
+KawasakiNew[state_Integer] := Module[
   {b, nbr, dE},
-  b   = readBit[];
+  b   = RandomInteger[];
   nbr = If[b == 0, leftOf$kn[state], rightOf$kn[state]];
   dE  = energy$kn[nbr] - energy$kn[state];
-  If[acceptTest[MetropolisProb[dE]] == 1, nbr, state]
+  If[RandomReal[] < MetropolisProb[dE], nbr, state]
 ]
 
 (* ================================================================
    FAILING algorithm: always accepts, no Metropolis
    ================================================================
-   Reads ONE bit for direction, then always moves there.
+   Draws RandomInteger[] for direction, then always moves there.
    Drives a symmetric random walk regardless of energies ->
    cannot satisfy detailed balance when energies differ.
    ================================================================ *)
-AlwaysAcceptNew[state_Integer, readBit_, acceptTest_] := Module[
+AlwaysAcceptNew[state_Integer] := Module[
   {b, nbr},
-  b   = readBit[];
+  b   = RandomInteger[];
   nbr = If[b == 0, leftOf$kn[state], rightOf$kn[state]];
   nbr   (* always move, no energy test *)
 ]

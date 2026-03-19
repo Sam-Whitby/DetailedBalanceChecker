@@ -38,21 +38,21 @@ leftOf$mp[s_Integer]  := Mod[s - 2, L$mp] + 1
 (* ================================================================
    Algorithm: single definition for both symbolic and numeric checks.
    ================================================================ *)
-KawasakiMulti[{p1_Integer, p2_Integer}, readBit_, acceptTest_] :=
+KawasakiMulti[{p1_Integer, p2_Integer}] :=
   Module[
     {b1, b2, mover, other, target, dE},
     (* Pick which particle to attempt moving *)
-    b1 = readBit[];
+    b1 = RandomInteger[];
     {mover, other} = If[b1 == 0, {p1, p2}, {p2, p1}];
     (* Pick direction *)
-    b2     = readBit[];
+    b2     = RandomInteger[];
     target = If[b2 == 0, leftOf$mp[mover], rightOf$mp[mover]];
     (* Hard-core rejection: target occupied *)
     If[target == other,
       {p1, p2},          (* stay put *)
       (* Metropolis acceptance *)
       dE = eps$mp[[target]] - eps$mp[[mover]];
-      If[acceptTest[MetropolisProb[dE]] == 1,
+      If[RandomReal[] < MetropolisProb[dE],
         Sort[{target, other}],    (* accept: new sorted state *)
         {p1, p2}]                 (* reject: keep current state *)
     ]

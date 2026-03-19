@@ -18,9 +18,9 @@
 Get[DirectoryName[$InputFileName] <> "random_native_pass.wl"]
 
 (* Wrong acceptance: prefer uphill moves *)
-KawasakiNativeWrongSign[state_Integer, readBit_, acceptTest_] := Module[
+KawasakiNativeWrongSign[state_Integer] := Module[
   {dir, nbr, dE, pWrong},
-  dir    = RandomInteger[1];
+  dir    = RandomInteger[];
   nbr    = Mod[state + If[dir == 1, 1, -1] - 1, L$rn] + 1;
   dE     = energy$rn[nbr] - energy$rn[state];
   (* Wrong sign: accept downhill with prob Exp[+beta*dE] < 1 *)

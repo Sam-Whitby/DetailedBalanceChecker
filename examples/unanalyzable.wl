@@ -5,9 +5,8 @@
    Two algorithms illustrating calls that cannot be intercepted:
 
    (A) RandomVariate -- sampling from a continuous distribution.
-       Cannot be converted to readBit[]/acceptTest[] because the
-       output is a continuous floating-point value, not a discrete
-       bit.  The checker throws $dbc$cantHandle immediately.
+       Cannot be converted to a discrete bit-tape operation.
+       The checker throws $dbc$cantHandle immediately.
 
    (B) AbsoluteTime -- a time-dependent call.
        Even if the result happens to be used for an acceptance
@@ -15,7 +14,7 @@
        be reproduced from a bit sequence.  CheckAlgorithmSafety
        flags this before the BFS even starts.
 
-   Note: RandomInteger[{1,3}] (non-power-of-2 range) IS now supported
+   Note: RandomInteger[{1,3}] (non-power-of-2 range) IS supported
    via rejection sampling -- see examples/nonpower_of_two.wl.
 
    In each case RunFullCheck returns:
@@ -29,9 +28,9 @@ numBeta$ua = 3/2
 energy$ua[s_Integer] := eps$ua[[s]]
 
 (* ---- (A) RandomVariate: unsupported continuous distribution ---- *)
-UnanalyzableVariate[state_Integer, readBit_, acceptTest_] := Module[
+UnanalyzableVariate[state_Integer] := Module[
   {dir, nbr, dE, u},
-  dir = readBit[];
+  dir = RandomInteger[];
   nbr = Mod[state + If[dir == 1, 1, -1] - 1, L$ua] + 1;
   dE  = energy$ua[nbr] - energy$ua[state];
   (* RandomVariate cannot be intercepted: analysis will fail *)
@@ -40,9 +39,9 @@ UnanalyzableVariate[state_Integer, readBit_, acceptTest_] := Module[
 ]
 
 (* ---- (B) AbsoluteTime: time-dependent, flagged by safety check ---- *)
-UnanalyzableTime[state_Integer, readBit_, acceptTest_] := Module[
+UnanalyzableTime[state_Integer] := Module[
   {dir, nbr, dE},
-  dir = readBit[];
+  dir = RandomInteger[];
   nbr = Mod[state + If[dir == 1, 1, -1] - 1, L$ua] + 1;
   dE  = energy$ua[nbr] - energy$ua[state];
   (* Using wall-clock time as a random source -- completely wrong *)

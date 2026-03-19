@@ -26,18 +26,16 @@ energy$np[s_Integer] := eps$np[[s]]
 (* Propose a neighbour using RandomInteger[{1,3}]:
    draw a site uniformly from {1,2,3} and retry if we land on the
    current site.  The checker handles this via rejection sampling. *)
-KawasakiNonPow2[state_Integer, readBit_, acceptTest_] := Module[
+KawasakiNonPow2[state_Integer] := Module[
   {proposal, dE},
-  (* Pick left or right uniformly.
-     RandomInteger[{1,2}] would be power-of-2; we deliberately use
-     RandomInteger[{1,3}] and map {1->left, 2->right, 3->right}
-     to demonstrate rejection-sampling support.  To keep DB exact,
-     we instead pick a target uniformly from all L sites and skip
-     if it equals state (makes the proposal symmetric). *)
+  (* Pick a target site uniformly from all L sites.
+     RandomInteger[{1,3}] has 3 outcomes (not a power of 2):
+     the checker reads 2 bits and discards the value 3 via
+     rejection sampling so the proposal stays symmetric. *)
   proposal = RandomInteger[{1, L$np}];
   If[proposal == state,
     state,   (* stay -- symmetric self-loop preserves DB *)
     dE = energy$np[proposal] - energy$np[state];
-    If[acceptTest[MetropolisProb[dE]] == 1, proposal, state]
+    If[RandomReal[] < MetropolisProb[dE], proposal, state]
   ]
 ]

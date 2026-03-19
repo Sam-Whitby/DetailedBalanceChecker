@@ -15,10 +15,10 @@ Get[DirectoryName[$InputFileName] <> "ring_kawasaki.wl"]
 WrongSignProb[dE_] :=
   Piecewise[{{1, dE >= 0}, {Exp[\[Beta] * dE], dE < 0}}]
 
-WrongSign[state_Integer, readBit_, acceptTest_] := Module[
+WrongSign[state_Integer] := Module[
   {dir, nbr, dE},
-  dir = readBit[];
+  dir = RandomInteger[];
   nbr = Mod[state + If[dir == 1, 1, -1] - 1, L$rk] + 1;
   dE  = energy$rk[nbr] - energy$rk[state];
-  If[acceptTest[WrongSignProb[dE]] == 1, nbr, state]
+  If[RandomReal[] < WrongSignProb[dE], nbr, state]
 ]

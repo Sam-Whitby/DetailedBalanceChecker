@@ -88,7 +88,7 @@ def main():
     draw_db_table(ax_db, db_pairs)
     for i in range(n):
         draw_tree(ax_tr[i], states[i],
-                  tree_raw.get(str(states[i]), []), states)
+                  tree_raw[i] if i < len(tree_raw) else [], states)
     draw_matrix(ax_mat, states, mat_raw)
     draw_code_panel(ax_code, alg_code)
 

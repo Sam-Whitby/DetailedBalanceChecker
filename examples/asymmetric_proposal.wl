@@ -29,15 +29,15 @@
 Get[DirectoryName[$InputFileName] <> "barker_ring.wl"]   (* reuse same system *)
 
 (* Asymmetric proposal + Metropolis on L=4 ring *)
-AsymmetricProposal[state_Integer, readBit_, acceptTest_] := Module[
+AsymmetricProposal[state_Integer] := Module[
   {b1, b2, nbr, dE},
-  b1 = readBit[];
+  b1 = RandomInteger[];
   nbr = If[b1 == 0,
-    rightOf$br[state],                         (* bit1=0 -> right (50%) *)
-    b2 = readBit[];
-    If[b2 == 0, rightOf$br[state],             (* bit1=1,bit2=0 -> right (25%) *)
-                leftOf$br[state]]              (* bit1=1,bit2=1 -> left  (25%) *)
+    rightOf$br[state],                         (* 0 -> right (50%) *)
+    b2 = RandomInteger[];
+    If[b2 == 0, rightOf$br[state],             (* 1,0 -> right (25%) *)
+                leftOf$br[state]]              (* 1,1 -> left  (25%) *)
   ];
   dE = energy$br[nbr] - energy$br[state];
-  If[acceptTest[MetropolisProb[dE]] == 1, nbr, state]
+  If[RandomReal[] < MetropolisProb[dE], nbr, state]
 ]

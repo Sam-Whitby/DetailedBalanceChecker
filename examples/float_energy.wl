@@ -33,10 +33,10 @@ energy$fe[s_Integer] := eps$fe[[s]]
 (* Algorithm using float literals throughout.
    RandomReal[] < 0.5 : direction with float comparison
    1.0 / Exp[-β*dE]   : acceptance with float literal *)
-KawasakiFloat[state_Integer, readBit_, acceptTest_] := Module[
+KawasakiFloat[state_Integer] := Module[
   {nbr, dE, p},
   nbr = If[RandomReal[] < 0.5, leftOf$fe[state], rightOf$fe[state]];
   dE  = energy$fe[nbr] - energy$fe[state];
   p   = If[dE <= 0, 1.0, Exp[(-\[Beta]) * dE]];
-  If[acceptTest[p] == 1, nbr, state]
+  If[RandomReal[] < p, nbr, state]
 ]

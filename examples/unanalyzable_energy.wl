@@ -19,12 +19,12 @@ L$ue       = 3
 numBeta$ue = 1
 
 (* Algorithm is a normal Kawasaki ring -- the bug is in the energy. *)
-KawasakiUE[state_Integer, readBit_, acceptTest_] := Module[
+KawasakiUE[state_Integer] := Module[
   {b, nbr, dE},
-  b   = readBit[];
+  b   = RandomInteger[];
   nbr = Mod[state + If[b == 1, 1, -1] - 1, L$ue] + 1;
   dE  = energyTime$ue[nbr] - energyTime$ue[state];
-  If[acceptTest[MetropolisProb[dE]] == 1, nbr, state]
+  If[RandomReal[] < MetropolisProb[dE], nbr, state]
 ]
 
 (* ---- (A) AbsoluteTime in energy: non-deterministic ---- *)

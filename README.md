@@ -10,7 +10,7 @@ Produces a full diagnostic PNG report for each algorithm tested.
 
 Given an MCMC algorithm and a bare energy function the checker:
 
-1. **Builds the decision tree** by exhaustive BFS over all bit sequences the algorithm can consume. The state space is **discovered automatically** from a single seed state.
+1. **Builds the decision tree** by exhaustive BFS over all random-call sequences the algorithm can make. The state space is **discovered automatically** from a single seed state.
 
 2. **Checks detailed balance exactly** — constructs the symbolic transition matrix and verifies T(i→j)·π(i) = T(j→i)·π(j) for every pair using `FullSimplify` with β > 0. The result is an exact PASS or FAIL.
 
@@ -18,27 +18,26 @@ Given an MCMC algorithm and a bare energy function the checker:
 
 4. **Renders a PNG report** showing the decision trees, symbolic transition matrix, detailed-balance pair table, and simulated vs Boltzmann scatter plot.
 
-### Why bits?
+### How it works internally
 
-Every random decision flows through `readBit[]` (returns 0 or 1) or `acceptTest[p]` (accept/reject with probability p). Fixing the bit sequence makes the algorithm deterministic and enables exhaustive path enumeration.
+The algorithm is called with native Mathematica random functions (`RandomInteger[]`, `RandomReal[]`, etc.), which are intercepted during BFS. Each call is replaced by a deterministic value from a bit tape, making the algorithm's execution path fully reproducible.
 
-- `readBit[]` consumes one fair-coin bit; contributes ½ to the path weight.
-- `acceptTest[p]` consumes one bit; contributes p (accept) or 1−p (reject).
+- `RandomInteger[]` or `RandomInteger[1]` — reads one bit (0 or 1); contributes ½ to path weight.
+- `RandomReal[] < p` — reads one bit; contributes p (accept) or 1−p (reject) to path weight.
 - T(i→j) = **sum of path weights** over all bit sequences taking state i to state j.
 
-### Automatic random-call interception
+### Supported random calls
 
-| Call | Converted to | Notes |
+| Call | Behaviour during BFS | Notes |
 |---|---|---|
-| `RandomReal[]` | deferred token → `acceptTest[p]` when compared | Works in `If[RandomReal[] < p, ...]` |
+| `RandomReal[]` | deferred token; fires as accept/reject when compared with `< p` | Works in `If[RandomReal[] < p, ...]` |
 | `Random[]` | same as `RandomReal[]` | Deprecated Mathematica form |
-| `RandomInteger[1]` or `RandomInteger[]` | `readBit[]` | Returns 0 or 1 |
-| `RandomInteger[{lo, hi}]` | reads k=IntegerLength(hi−lo, 2) bits; out-of-range silently discarded | Any integer range |
-| `RandomInteger[n]` | reads k=IntegerLength(n, 2) bits; out-of-range silently discarded | Any non-negative upper bound |
-| `RandomChoice[list]` | reads k=IntegerLength(n−1, 2) bits; out-of-range silently discarded | Any list length |
-| Float literals in `acceptTest` | rationalised: `0.5 → 1/2`, `1.0 → 1`, etc. | See float support below |
+| `RandomInteger[]` or `RandomInteger[1]` | reads one bit; returns 0 or 1 | |
+| `RandomInteger[{lo, hi}]` | reads k=⌈log₂(hi−lo+1)⌉ bits; out-of-range silently discarded | Any integer range |
+| `RandomInteger[n]` | reads k=⌈log₂(n+1)⌉ bits; out-of-range silently discarded | Any non-negative upper bound |
+| `RandomChoice[list]` | reads k=⌈log₂(n)⌉ bits; out-of-range silently discarded | Any list length |
 
-**Non-power-of-2 ranges via rejection sampling.** For n values, k = IntegerLength(n−1, 2) bits are read (always an exact integer). Bit strings mapping to values ≥ n are silently discarded. The missing probability fraction is the same from every starting state, so the unnormalised T still satisfies detailed balance exactly.
+**Non-power-of-2 ranges via rejection sampling.** Bit strings mapping to out-of-range values are silently discarded. The missing probability fraction is identical from every starting state, so the unnormalised T still satisfies detailed balance exactly.
 
 Calls that **cannot** be intercepted (cause analysis to abort):
 - `RandomVariate[dist]` — continuous distributions
@@ -49,11 +48,11 @@ Calls that **cannot** be intercepted (cause analysis to abort):
 
 Both float **acceptance probabilities** and float **energy values** are fully supported.
 
-**Float acceptance probabilities** (inside the algorithm): Any `Real` value passed to `acceptTest` is rationalised via `Rationalize[]` at consumption time: `acceptTest[0.5]` → `acceptTest[1/2]`, `acceptTest[Exp[-β*1.0]]` → `acceptTest[Exp[-β]]`. This means `MetropolisProb` with a concrete float `dE` works correctly.
+**Float acceptance probabilities**: Any `Real` value in a `RandomReal[] < p` comparison is rationalised at consumption time: `0.5 → 1/2`, `Exp[-β*1.0] → Exp[-β]`. This means `MetropolisProb` with a concrete float `dE` works correctly.
 
-**Float energy values** (in the energy function): Any `Real` returned by `energy[s]` is rationalised in `CheckDetailedBalance` before passing to `FullSimplify`: `energy[s] = 0.5` → `1/2`. This means energy arrays like `{0., 1., 0.5}` work correctly.
+**Float energy values**: Any `Real` returned by `energy[s]` is rationalised in `CheckDetailedBalance` before `FullSimplify`: `energy[s] = 0.5` → `1/2`. Energy arrays like `{0., 1., 0.5}` work correctly.
 
-**Float energy arrays are still NOT recommended** as primary input — use exact rationals (`{0, 1, 1/2}`) when possible. The rationalisation is a convenience, not a guarantee of correctness for all possible float values (e.g. `0.1` → `1/10`, which may differ from the intended physical value by machine-precision rounding).
+**Float energy arrays are still NOT recommended** as primary input — use exact rationals (`{0, 1, 1/2}`) when possible.
 
 ### Energy function safety check
 
@@ -75,23 +74,23 @@ RunFullCheck[seedState, alg, energy, numBeta, options...]
 | Argument | Type | Description |
 |---|---|---|
 | `seedState` | any | One valid state; others discovered automatically via BFS |
-| `alg` | function | `alg[state, readBit, acceptTest]` — see below |
+| `alg` | function | `alg[state]` — takes only the current state; uses native random calls |
 | `energy` | function | `energy[state]` → bare energy (no β). Integers, rationals, or floats. |
 | `numBeta` | number | Inverse temperature β for the numerical MCMC run |
 
 ### Algorithm signature
 
+Algorithms take a single argument (the current state) and return the next state. Use native Mathematica random calls directly:
+
 ```mathematica
-myAlg[state_, readBit_, acceptTest_] := Module[
-  {b, nbr, dE},
-  b   = readBit[];
-  nbr = If[b == 0, left[state], right[state]];
+MyAlg[state_Integer] := Module[
+  {dir, nbr, dE},
+  dir = RandomInteger[];                         (* 0 or 1 *)
+  nbr = If[dir == 0, left[state], right[state]];
   dE  = energy[nbr] - energy[state];
-  If[acceptTest[MetropolisProb[dE]] == 1, nbr, state]
+  If[RandomReal[] < MetropolisProb[dE], nbr, state]
 ]
 ```
-
-The algorithm may also use `RandomInteger[]`, `RandomReal[]`, and `RandomChoice[]` natively. The `readBit_` and `acceptTest_` parameters may then be unused.
 
 **Requirements:**
 
@@ -133,7 +132,7 @@ git clone https://github.com/Sam-Whitby/DetailedBalanceChecker.git ~/Desktop/Det
 cd ~/Desktop/DetailedBalanceChecker
 
 wolframscript -file run_checks.wls          # core ring Kawasaki examples
-wolframscript -file run_variable_bit.wls    # variable-bit-depth examples
+wolframscript -file run_variable_bit.wls    # variable-depth examples
 wolframscript -file run_new_api.wls         # Barker + asymmetric proposal
 wolframscript -file run_extended.wls        # all extended features
 ```
@@ -157,7 +156,7 @@ wolframscript -file run_extended.wls        # all extended features
 | run_extended | D | Kawasaki with native RandomReal[] | PASS |
 | run_extended | E | Native RandomReal[], wrong sign | FAIL |
 | run_extended | F | RandomInteger[{1,3}] rejection sampling | PASS |
-| run_extended | G | Float energy values + float probs | PASS |
+| run_extended | G | Float energy values + float acceptance probs | PASS |
 | run_extended | H | Unanalyzable: RandomVariate in algorithm | aborts |
 | run_extended | I | Unanalyzable: AbsoluteTime in algorithm | aborts |
 | run_extended | J | Unanalyzable: AbsoluteTime in energy | aborts |
@@ -197,7 +196,7 @@ Optional `key=value` flags (no spaces around `=`):
 
 ```bash
 # Run the built-in Kawasaki ring example
-wolframscript -file check.wls examples/ring_kawasaki.wl 1 KawasakiRing energy 1
+wolframscript -file check.wls examples/ring_kawasaki.wl 1 KawasakiRing energy\$rk 1
 
 # Run with custom options
 wolframscript -file check.wls my_alg.wl 1 MyAlg energy 2.0 NSteps=80000 Verbose=False
@@ -210,18 +209,18 @@ wolframscript -file check.wls examples/multi_particle.wl "{1,2}" KawasakiMulti e
 
 Create `my_algorithm.wl`:
 ```mathematica
-L        = 4
-eps      = {0, 1, 3, 2}
-numBeta  = 1
+L       = 4
+eps     = {0, 1, 3, 2}
+numBeta = 1
 
 energy[s_Integer] := eps[[s]]
 
-MyAlg[state_Integer, readBit_, acceptTest_] := Module[
-  {b, nbr, dE},
-  b   = readBit[];
-  nbr = If[b == 0, Mod[state-2,L]+1, Mod[state,L]+1];
+MyAlg[state_Integer] := Module[
+  {dir, nbr, dE},
+  dir = RandomInteger[];
+  nbr = If[dir == 0, Mod[state-2, L]+1, Mod[state, L]+1];
   dE  = energy[nbr] - energy[state];
-  If[acceptTest[MetropolisProb[dE]] == 1, nbr, state]
+  If[RandomReal[] < MetropolisProb[dE], nbr, state]
 ]
 ```
 
@@ -237,18 +236,18 @@ wolframscript -file check.wls my_algorithm.wl 1 MyAlg energy 1
 wolframscript -e '
 Get["dbc_core.wl"];
 
-L = 4;
-eps = {0, 1, 3, 2};    (* exact integers or rationals *)
+L   = 4;
+eps = {0, 1, 3, 2};
 numBeta = 1;
 
 energy[s_Integer] := eps[[s]];
 
-MyAlg[state_Integer, readBit_, acceptTest_] := Module[
-  {b, nbr, dE},
-  b   = readBit[];
-  nbr = If[b == 0, Mod[state-2,L]+1, Mod[state,L]+1];
+MyAlg[state_Integer] := Module[
+  {dir, nbr, dE},
+  dir = RandomInteger[];
+  nbr = If[dir == 0, Mod[state-2, L]+1, Mod[state, L]+1];
   dE  = energy[nbr] - energy[state];
-  If[acceptTest[MetropolisProb[dE]] == 1, nbr, state]
+  If[RandomReal[] < MetropolisProb[dE], nbr, state]
 ];
 
 RunFullCheck[1, MyAlg, energy, numBeta,
@@ -275,26 +274,27 @@ RunFullCheck[1, MyAlg, energy, numBeta,
 ```
 dbc_core.wl                   Core library
 show_report.py                Python/matplotlib report renderer
+check.wls                     Single-line terminal interface
 run_checks.wls                Core examples (3)
-run_variable_bit.wls          Variable-bit-depth examples (2)
+run_variable_bit.wls          Variable-depth examples (2)
 run_new_api.wls               Barker + asymmetric-proposal examples (4)
 run_extended.wls              Extended feature examples (11, A-K)
 examples/
   ring_kawasaki.wl            L=3 ring, Kawasaki Metropolis             [PASS]
   always_accept.wl            L=3 ring, always accept                  [FAIL]
   wrong_sign.wl               L=3 ring, wrong acceptance sign          [FAIL]
-  variable_bit_pass.wl        L=4 ring, variable-bit two-speed         [PASS]
-  variable_bit_fail.wl        L=4 ring, variable-bit biased drift      [FAIL]
+  variable_bit_pass.wl        L=4 ring, variable-depth two-speed       [PASS]
+  variable_bit_fail.wl        L=4 ring, variable-depth biased drift    [FAIL]
   kawasaki_new.wl             L=3 ring, Metropolis and always-accept   [PASS/FAIL]
   barker_ring.wl              L=4 ring, Barker criterion               [PASS]
   asymmetric_proposal.wl      L=4 ring, biased proposal + Metropolis   [FAIL]
   cyclic_drift.wl             L=4 ring, always-right, flat energy      [DB-FAIL, num-PASS]
   multi_particle.wl           L=4 ring, 2 particles, hard-core         [PASS]
   continuous_metropolis.wl    Discretised circle, rational states       [PASS]
-  random_native_pass.wl       Kawasaki using native RandomReal[]       [PASS]
-  random_native_fail.wl       Wrong-sign using native RandomReal[]     [FAIL]
+  random_native_pass.wl       Kawasaki, native random calls            [PASS]
+  random_native_fail.wl       Wrong-sign, native random calls          [FAIL]
   nonpower_of_two.wl          RandomInteger[{1,3}] rejection sampling  [PASS]
-  float_energy.wl             Float energy + float probs               [PASS]
+  float_energy.wl             Float energy + float acceptance probs    [PASS]
   unanalyzable.wl             RandomVariate, AbsoluteTime in alg       [abort]
   unanalyzable_energy.wl      AbsoluteTime, RandomVariate in energy    [abort]
 ```

@@ -11,9 +11,9 @@
 Get[DirectoryName[$InputFileName] <> "ring_kawasaki.wl"]
 
 (* Always-accept: same proposal as KawasakiRing but ignores energy *)
-AlwaysAccept[state_Integer, readBit_, acceptTest_] := Module[
+AlwaysAccept[state_Integer] := Module[
   {dir, nbr},
-  dir = readBit[];
+  dir = RandomInteger[];
   nbr = Mod[state + If[dir == 1, 1, -1] - 1, L$rk] + 1;
   nbr   (* always move, no acceptance test *)
 ]

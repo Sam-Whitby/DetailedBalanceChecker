@@ -37,10 +37,10 @@ prevPos$cm[x_] := Mod[x - step$cm, 1]
 (* ================================================================
    Algorithm: propose +-step on the discretised ring, Metropolis.
    ================================================================ *)
-ContinuousMetropolis[x_, readBit_, acceptTest_] := Module[
+ContinuousMetropolis[x_] := Module[
   {b, xNew, dE},
-  b    = readBit[];
+  b    = RandomInteger[];
   xNew = If[b == 0, prevPos$cm[x], nextPos$cm[x]];
   dE   = energy$cm[xNew] - energy$cm[x];
-  If[acceptTest[MetropolisProb[dE]] == 1, xNew, x]
+  If[RandomReal[] < MetropolisProb[dE], xNew, x]
 ]

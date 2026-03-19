@@ -42,27 +42,27 @@ energy$vb[s_Integer] := eps$vb[[s]]
    Single algorithm: works symbolically (beta unassigned) and
    numerically (Block[{beta = numBeta$vb}]).
    ================================================================ *)
-TwoSpeed[state_Integer, readBit_, acceptTest_] := Module[
+TwoSpeed[state_Integer] := Module[
   {b1, b2, b3, nbr, dE},
-  b1 = readBit[];
+  b1 = RandomInteger[];
   If[b1 == 0,
 
-    (* ---- Standard hop: 1 more bit picks direction ---- *)
-    b2  = readBit[];
+    (* ---- Standard hop: 1 more random integer picks direction ---- *)
+    b2  = RandomInteger[];
     nbr = If[b2 == 0, leftOf$vb[state], rightOf$vb[state]];
     dE  = energy$vb[nbr] - energy$vb[state];
-    If[acceptTest[MetropolisProb[dE]] == 1, nbr, state],
+    If[RandomReal[] < MetropolisProb[dE], nbr, state],
 
-    (* ---- Lazy hop: gatekeeper bit ---- *)
-    b2 = readBit[];
+    (* ---- Lazy hop: gatekeeper random integer ---- *)
+    b2 = RandomInteger[];
     If[b2 == 0,
-      (* Stay put -- no further bits needed; depth-2 leaf *)
+      (* Stay put -- depth-2 leaf *)
       state,
-      (* Willing to move: read direction bit, then Metropolis *)
-      b3  = readBit[];
+      (* Willing to move: read direction, then Metropolis *)
+      b3  = RandomInteger[];
       nbr = If[b3 == 0, leftOf$vb[state], rightOf$vb[state]];
       dE  = energy$vb[nbr] - energy$vb[state];
-      If[acceptTest[MetropolisProb[dE]] == 1, nbr, state]
+      If[RandomReal[] < MetropolisProb[dE], nbr, state]
     ]
   ]
 ]

@@ -38,10 +38,10 @@ energy$br[s_Integer] := eps$br[[s]]
    DB check and evaluates numerically during MCMC via Block. *)
 BarkerProb[dE_] := 1 / (1 + Exp[\[Beta] * dE])
 
-BarkerRing[state_Integer, readBit_, acceptTest_] := Module[
+BarkerRing[state_Integer] := Module[
   {b, nbr, dE},
-  b   = readBit[];
+  b   = RandomInteger[];
   nbr = If[b == 0, leftOf$br[state], rightOf$br[state]];
   dE  = energy$br[nbr] - energy$br[state];
-  If[acceptTest[BarkerProb[dE]] == 1, nbr, state]
+  If[RandomReal[] < BarkerProb[dE], nbr, state]
 ]
