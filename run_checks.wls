@@ -5,24 +5,22 @@
    Run from terminal:
      wolframscript -file run_checks.wls
 
-   Three examples:
-     1. Kawasaki ring with Metropolis          --> PASS
-     2. Kawasaki ring, always accept           --> FAIL
-     3. Kawasaki ring, wrong acceptance sign   --> FAIL
-
-   For each example, two PNG plots are exported to the same
-   directory as this script:
-     {SystemName}_frequencies.png       simulated vs Boltzmann bar chart
-     {SystemName}_transition_matrix.png numerical T[from,to] heatmap
+   Three examples are run in sequence.  Each opens a Mathematica
+   window showing:
+     - the algorithm source
+     - the decision tree for every starting state
+     - the symbolic transition matrix
+     - the detailed-balance pair table (green = pass, red = fail)
+     - the simulated vs Boltzmann bar chart
    ================================================================ *)
 
 scriptDir = DirectoryName[$InputFileName];
 Get[scriptDir <> "dbc_core.wl"];
 
 (* ================================================================
-   EXAMPLE 1: Kawasaki ring + Metropolis  [should PASS]
+   EXAMPLE 1: Ring Kawasaki + Metropolis  [should PASS]
    ================================================================ *)
-Print["\n", StringRepeat["#", 62]];
+Print[StringRepeat["#", 62]];
 Print["EXAMPLE 1: Kawasaki ring + Metropolis  (expected: PASS)"];
 Print[StringRepeat["#", 62]];
 
@@ -34,13 +32,13 @@ result1 = RunFullCheck[
   KawasakiNum$rk,
   symEnergy$rk,
   numEnergy$rk,
-  "SystemName"    -> "Kawasaki_ring_PASS",
+  "SystemName"    -> "Kawasaki ring L=3, 1 particle  [PASS expected]",
+  "AlgorithmCode" -> ReadString[scriptDir <> "examples/ring_kawasaki.wl"],
   "MaxBitDepth"   -> 10,
   "TimeLimit"     -> 60.,
   "NSteps"        -> 80000,
   "Verbose"       -> True,
-  "ExportPlots"   -> True,
-  "PlotDirectory" -> scriptDir
+  "OpenWindow"    -> True
 ];
 
 (* ================================================================
@@ -58,13 +56,13 @@ result2 = RunFullCheck[
   AlwaysAcceptNum,
   symEnergy$aa,
   numEnergy$aa,
-  "SystemName"    -> "Always_accept_FAIL",
+  "SystemName"    -> "Always accept (no Metropolis)  [FAIL expected]",
+  "AlgorithmCode" -> ReadString[scriptDir <> "examples/always_accept.wl"],
   "MaxBitDepth"   -> 10,
   "TimeLimit"     -> 60.,
   "NSteps"        -> 80000,
   "Verbose"       -> False,
-  "ExportPlots"   -> True,
-  "PlotDirectory" -> scriptDir
+  "OpenWindow"    -> True
 ];
 
 (* ================================================================
@@ -82,15 +80,13 @@ result3 = RunFullCheck[
   WrongSignNum,
   symEnergy$ws,
   numEnergy$ws,
-  "SystemName"    -> "Wrong_sign_FAIL",
+  "SystemName"    -> "Wrong acceptance sign (exp[+beta*dE])  [FAIL expected]",
+  "AlgorithmCode" -> ReadString[scriptDir <> "examples/wrong_sign.wl"],
   "MaxBitDepth"   -> 10,
   "TimeLimit"     -> 60.,
   "NSteps"        -> 80000,
   "Verbose"       -> False,
-  "ExportPlots"   -> True,
-  "PlotDirectory" -> scriptDir
+  "OpenWindow"    -> True
 ];
 
-Print["\nAll checks complete."];
-Print["Plots saved in: ", scriptDir];
-Exit[0]
+Print["\nAll checks complete.  PNG reports have been opened."];
