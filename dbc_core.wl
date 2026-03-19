@@ -198,9 +198,9 @@ RunWithBitsAT[alg_, state_, bits_List] := Module[
             $dbc$tag]]],
       Random = Function[{}, $dbc$rand[acceptTest]],
 
-      (* RandomInteger: exact for power-of-2 ranges; rejection sampling otherwise.
-         Rejection sampling: read k=Ceiling[Log2[n]] bits; if the value falls
-         outside [0,n-1] throw $dbc$outOfRange so BuildTreeAT silently discards
+      (* RandomInteger: rejection sampling for all ranges.
+         Read k=IntegerLength[n-1,2] bits (always an exact integer); if the value
+         falls outside [0,n-1] throw $dbc$outOfRange so BuildTreeAT silently discards
          the path.  The missing probability fraction is uniform across all
          starting states, so the unnormalised T still satisfies DB exactly. *)
       RandomInteger = Function[{arg___},
@@ -215,7 +215,7 @@ RunWithBitsAT[alg_, state_, bits_List] := Module[
               Which[
                 n == 1, lo,
                 n > 1,
-                  k   = Ceiling[Log2[n]];
+                  k   = IntegerLength[n - 1, 2];  (* always exact integer *)
                   val = $dbc$readBitsAsInt[k, readBit];
                   If[val >= n,
                     Throw[$dbc$outOfRange, $dbc$tag],
@@ -227,7 +227,7 @@ RunWithBitsAT[alg_, state_, bits_List] := Module[
               Which[
                 n == 1, 0,
                 n > 1,
-                  k   = Ceiling[Log2[n]];
+                  k   = IntegerLength[n - 1, 2];  (* always exact integer *)
                   val = $dbc$readBitsAsInt[k, readBit];
                   If[val >= n,
                     Throw[$dbc$outOfRange, $dbc$tag],
@@ -246,7 +246,7 @@ RunWithBitsAT[alg_, state_, bits_List] := Module[
             n == 0, Throw[$dbc$cantHandle["RandomChoice[]: empty list"], $dbc$tag],
             n == 1, list[[1]],
             True,
-              k   = Ceiling[Log2[n]];
+              k   = IntegerLength[n - 1, 2];  (* always exact integer *)
               idx = $dbc$readBitsAsInt[k, readBit];
               If[idx >= n,
                 Throw[$dbc$outOfRange, $dbc$tag],
@@ -513,6 +513,45 @@ CheckAlgorithmSafety[alg_] := (
   False
 )
 
+(* ----------------------------------------------------------------
+   CheckEnergySafety
+   Scans the DownValues of an energy function for calls that would
+   make the symbolic check meaningless: random-number generators,
+   time-dependent functions, etc.
+
+   These are safe:   exact arithmetic, lookup tables, Cos, Exp, ...
+   These are unsafe: any random call, AbsoluteTime, SessionTime, ...
+
+   Returns True if the energy function looks deterministic.
+   ---------------------------------------------------------------- *)
+$energyUnsafeFunctions = {
+  RandomReal, Random, RandomInteger, RandomChoice, RandomVariate,
+  RandomSample, RandomPermutation, RandomWord, RandomPrime, RandomColor,
+  AbsoluteTime, SessionTime, TimeObject, DateObject, Now
+};
+
+CheckEnergySafety[energy_Symbol] := Module[
+  {defs, found},
+  defs = DownValues[energy];
+  If[defs === {},
+    Print["  ENERGY WARNING: '", energy, "' has no DownValues. ",
+          "Is it defined before RunFullCheck is called?"];
+    Return[False]
+  ];
+  found = Select[$energyUnsafeFunctions, !FreeQ[defs, #] &];
+  If[found === {},
+    True,
+    Print["  ENERGY SAFETY FAIL: energy function '", energy,
+          "' contains calls that make the symbolic check meaningless: ",
+          found];
+    Print["  Energy must be a deterministic pure function of state. ",
+          "Remove all random/time-dependent calls from the energy function."];
+    False
+  ]
+]
+
+CheckEnergySafety[energy_] := True  (* anonymous functions pass through *)
+
 
 (* ================================================================
    SECTION 3 – CHECKERS
@@ -526,15 +565,19 @@ CheckAlgorithmSafety[alg_] := (
    Returns list of violation records; empty list = PASS.
    ---------------------------------------------------------------- *)
 CheckDetailedBalance[matrix_Association, allStates_List, symEnergy_] := Module[
-  {n = Length[allStates], violations = {}, si, sj, tij, tji, res},
+  {n = Length[allStates], violations = {}, si, sj, tij, tji, ei, ej, res},
   Do[
     si = allStates[[i]]; sj = allStates[[j]];
     tij = Lookup[matrix, Key[{si, sj}], 0];
     tji = Lookup[matrix, Key[{sj, si}], 0];
+    (* Rationalise any float energy values so FullSimplify receives exact
+       symbolic expressions: 0.5 -> 1/2, 1.0 -> 1, etc. *)
+    ei  = symEnergy[si] /. {r_Real :> Rationalize[r]};
+    ej  = symEnergy[sj] /. {r_Real :> Rationalize[r]};
     res = FullSimplify[
       PiecewiseExpand[
-        tij * Exp[-\[Beta] * symEnergy[si]] -
-        tji * Exp[-\[Beta] * symEnergy[sj]]
+        tij * Exp[-\[Beta] * ei] -
+        tji * Exp[-\[Beta] * ej]
       ],
       Assumptions -> {\[Beta] > 0}
     ];
@@ -1206,8 +1249,20 @@ RunFullCheck[seedState_, alg_, energy_, numBeta_?NumericQ,
     algCode = StringTrim @
               ToString[InputForm[DownValues[alg]], OutputForm]];
 
-  (* ---- Safety check ---- *)
+  (* ---- Safety checks ---- *)
   If[Head[alg] === Symbol, CheckAlgorithmSafety[alg]];
+  If[Head[energy] === Symbol,
+    If[!CheckEnergySafety[energy],
+      Print["\n", StringRepeat["=", 62]];
+      Print["ANALYSIS FAILED -- energy function contains unsafe calls."];
+      Print[StringRepeat["=", 62]];
+      Return[<|"pass" -> False,
+               "error" -> "energy function contains random or time-dependent calls",
+               "allStates" -> {}, "matrix" -> <||>,
+               "violations" -> {}, "counts" -> <||>,
+               "boltzmann" -> <||>, "kl" -> Indeterminate|>]
+    ]
+  ];
 
   (* ---- Terminal progress ---- *)
   Print[StringRepeat["=", 62]];
