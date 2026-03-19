@@ -189,12 +189,11 @@ RunWithBitsAT[alg_, state_, bits_List] := Module[
       (* RandomReal[] / Random[] → deferred comparison token that carries
          the local acceptTest; UpValues (defined below) convert comparisons
          to acceptTest calls with correct probability weights. *)
-      RandomReal = Function[{arg___},
-        If[{arg} === {},
+      RandomReal = Function[
+        If[Length[{##}] === 0,
           $dbc$rand[acceptTest],
           Throw[$dbc$cantHandle[
-            "RandomReal[" <> ToString[{arg}] <>
-            "]: only zero-argument form is supported; use RandomReal[]"],
+            "RandomReal[...]: only zero-argument form is supported; use RandomReal[]"],
             $dbc$tag]]],
       Random = Function[{}, $dbc$rand[acceptTest]],
 
@@ -203,45 +202,47 @@ RunWithBitsAT[alg_, state_, bits_List] := Module[
          falls outside [0,n-1] throw $dbc$outOfRange so BuildTreeAT silently discards
          the path.  The missing probability fraction is uniform across all
          starting states, so the unnormalised T still satisfies DB exactly. *)
-      RandomInteger = Function[{arg___},
-        Which[
-          (* RandomInteger[] or RandomInteger[1] → uniform {0,1} *)
-          {arg} === {} || {arg} === {1},
-            readBit[],
-          (* RandomInteger[{lo,hi}] *)
-          MatchQ[{arg}, {{_Integer, _Integer}}],
-            Module[{lo = {arg}[[1,1]], hi = {arg}[[1,2]], n, k, val},
-              n = hi - lo + 1;
-              Which[
-                n == 1, lo,
-                n > 1,
-                  k   = IntegerLength[n - 1, 2];  (* always exact integer *)
-                  val = $dbc$readBitsAsInt[k, readBit];
-                  If[val >= n,
-                    Throw[$dbc$outOfRange, $dbc$tag],
-                    lo + val]
-              ]],
-          (* RandomInteger[n] → uniform {0,...,n} *)
-          MatchQ[{arg}, {_Integer?NonNegative}],
-            Module[{n = {arg}[[1]] + 1, k, val},
-              Which[
-                n == 1, 0,
-                n > 1,
-                  k   = IntegerLength[n - 1, 2];  (* always exact integer *)
-                  val = $dbc$readBitsAsInt[k, readBit];
-                  If[val >= n,
-                    Throw[$dbc$outOfRange, $dbc$tag],
-                    val]
-              ]],
-          True,
-            Throw[$dbc$cantHandle[
-              "RandomInteger[" <> ToString[{arg}] <> "]: unsupported form"],
-              $dbc$tag]
-        ]],
+      RandomInteger = Function[
+        Module[{args = {##}},
+          Which[
+            (* RandomInteger[] or RandomInteger[1] → uniform {0,1} *)
+            args === {} || args === {1},
+              readBit[],
+            (* RandomInteger[{lo,hi}] *)
+            MatchQ[args, {{_Integer, _Integer}}],
+              Module[{lo = args[[1,1]], hi = args[[1,2]], n, k, val},
+                n = hi - lo + 1;
+                Which[
+                  n == 1, lo,
+                  n > 1,
+                    k   = IntegerLength[n - 1, 2];  (* always exact integer *)
+                    val = $dbc$readBitsAsInt[k, readBit];
+                    If[val >= n,
+                      Throw[$dbc$outOfRange, $dbc$tag],
+                      lo + val]
+                ]],
+            (* RandomInteger[n] → uniform {0,...,n} *)
+            MatchQ[args, {_Integer?NonNegative}],
+              Module[{n = args[[1]] + 1, k, val},
+                Which[
+                  n == 1, 0,
+                  n > 1,
+                    k   = IntegerLength[n - 1, 2];  (* always exact integer *)
+                    val = $dbc$readBitsAsInt[k, readBit];
+                    If[val >= n,
+                      Throw[$dbc$outOfRange, $dbc$tag],
+                      val]
+                ]],
+            True,
+              Throw[$dbc$cantHandle[
+                "RandomInteger[" <> ToString[args] <> "]: unsupported form"],
+                $dbc$tag]
+          ]]],
 
       (* RandomChoice[list]: exact for power-of-2 lengths; rejection otherwise. *)
-      RandomChoice = Function[{list_List},
-        Module[{n = Length[list], k, idx},
+      RandomChoice = Function[
+        Module[{list = #1, n, k, idx},
+          n = Length[list];
           Which[
             n == 0, Throw[$dbc$cantHandle["RandomChoice[]: empty list"], $dbc$tag],
             n == 1, list[[1]],
@@ -254,11 +255,11 @@ RunWithBitsAT[alg_, state_, bits_List] := Module[
           ]]],
 
       (* Unsupported random functions: throw $dbc$cantHandle immediately. *)
-      RandomVariate    = Function[{___}, Throw[$dbc$cantHandle["RandomVariate"],    $dbc$tag]],
-      RandomSample     = Function[{___}, Throw[$dbc$cantHandle["RandomSample"],     $dbc$tag]],
-      RandomPermutation= Function[{___}, Throw[$dbc$cantHandle["RandomPermutation"],$dbc$tag]],
-      RandomWord       = Function[{___}, Throw[$dbc$cantHandle["RandomWord"],       $dbc$tag]],
-      RandomPrime      = Function[{___}, Throw[$dbc$cantHandle["RandomPrime"],      $dbc$tag]]
+      RandomVariate    = Function[Throw[$dbc$cantHandle["RandomVariate"],    $dbc$tag]],
+      RandomSample     = Function[Throw[$dbc$cantHandle["RandomSample"],     $dbc$tag]],
+      RandomPermutation= Function[Throw[$dbc$cantHandle["RandomPermutation"],$dbc$tag]],
+      RandomWord       = Function[Throw[$dbc$cantHandle["RandomWord"],       $dbc$tag]],
+      RandomPrime      = Function[Throw[$dbc$cantHandle["RandomPrime"],      $dbc$tag]]
     },
     alg[state, readBit, acceptTest]
     ],
@@ -370,6 +371,14 @@ BuildTreeAT[seedState_, alg_, OptionsPattern[]] := Module[
           Return[res, Module],
         True,
           {ns, w} = res;
+          (* Guard against unevaluated algorithm calls appearing as states *)
+          If[!FreeQ[ns, alg],
+            Print["  ANALYSIS FAILED: algorithm returned an unevaluated call as next state."];
+            Print["  Check that the algorithm's pattern matches the seed state type."];
+            Return[$dbc$cantHandle[
+              "Algorithm returned unevaluated call -- pattern mismatch or argument error"],
+              Module]
+          ];
           AppendTo[leaves, {bits, ns, w}];
           (* Discover new states reached by this path *)
           If[!MemberQ[discovered, ns],

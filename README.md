@@ -167,7 +167,70 @@ wolframscript -file run_extended.wls        # all extended features
 
 ## Running your own algorithm
 
-### Quick start
+### Single-line terminal usage with `check.wls`
+
+The easiest way to check any algorithm from the terminal:
+
+```bash
+wolframscript -file check.wls <alg_file> <seed_state> <alg_name> <energy_name> <num_beta> [options]
+```
+
+| Argument | Description |
+|---|---|
+| `alg_file` | Path to your `.wl` file (absolute, or relative to the checker directory) |
+| `seed_state` | A valid starting state — integer, or `{i,j}` for multi-particle |
+| `alg_name` | Name of the algorithm function defined in the file |
+| `energy_name` | Name of the energy function defined in the file |
+| `num_beta` | Inverse temperature β for the numerical run |
+
+Optional `key=value` flags (no spaces around `=`):
+
+| Option | Default |
+|---|---|
+| `NSteps=N` | `100000` |
+| `MaxBitDepth=N` | `20` |
+| `SystemName=label` | algorithm name |
+| `Verbose=True/False` | `True` |
+| `OpenWindow=True/False` | `True` |
+
+**Examples:**
+
+```bash
+# Run the built-in Kawasaki ring example
+wolframscript -file check.wls examples/ring_kawasaki.wl 1 KawasakiRing energy 1
+
+# Run with custom options
+wolframscript -file check.wls my_alg.wl 1 MyAlg energy 2.0 NSteps=80000 Verbose=False
+
+# Multi-particle (list seed state)
+wolframscript -file check.wls examples/multi_particle.wl "{1,2}" KawasakiMulti energy\$mp 1 NSteps=120000
+```
+
+### Writing your algorithm file
+
+Create `my_algorithm.wl`:
+```mathematica
+L        = 4
+eps      = {0, 1, 3, 2}
+numBeta  = 1
+
+energy[s_Integer] := eps[[s]]
+
+MyAlg[state_Integer, readBit_, acceptTest_] := Module[
+  {b, nbr, dE},
+  b   = readBit[];
+  nbr = If[b == 0, Mod[state-2,L]+1, Mod[state,L]+1];
+  dE  = energy[nbr] - energy[state];
+  If[acceptTest[MetropolisProb[dE]] == 1, nbr, state]
+]
+```
+
+Then run:
+```bash
+wolframscript -file check.wls my_algorithm.wl 1 MyAlg energy 1
+```
+
+### Manual / inline usage
 
 ```bash
 # From the DetailedBalanceChecker directory:
@@ -191,36 +254,6 @@ MyAlg[state_Integer, readBit_, acceptTest_] := Module[
 RunFullCheck[1, MyAlg, energy, numBeta,
   "SystemName" -> "My algorithm",
   "OpenWindow" -> False]
-'
-```
-
-### As a script file
-
-Create `my_algorithm.wl`:
-```mathematica
-L        = 4
-eps      = {0, 1, 3, 2}
-numBeta  = 1
-
-energy[s_Integer] := eps[[s]]
-
-MyAlg[state_Integer, readBit_, acceptTest_] := Module[
-  {b, nbr, dE},
-  b   = readBit[];
-  nbr = If[b == 0, Mod[s-2,L]+1, Mod[s,L]+1];
-  dE  = energy[nbr] - energy[state];
-  If[acceptTest[MetropolisProb[dE]] == 1, nbr, state]
-]
-```
-
-Then run:
-```bash
-wolframscript -e '
-Get["dbc_core.wl"];
-Get["my_algorithm.wl"];
-RunFullCheck[1, MyAlg, energy, numBeta,
-  "SystemName" -> "My algorithm",
-  "NSteps" -> 80000]
 '
 ```
 
