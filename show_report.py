@@ -75,17 +75,18 @@ def main():
 
     ax_sc   = fig.add_subplot(gs[0, :2])   # scatter — 2/3 width
     ax_db   = fig.add_subplot(gs[0, 2])    # DB table — 1/3 width
-    n_trees = min(n, 3)
-    ax_tr   = [fig.add_subplot(gs[1, i]) for i in range(n_trees)]
-    for i in range(n_trees, 3):
-        fig.add_subplot(gs[1, i]).axis('off')
+    # Trees: nested sub-gridspec so any number of states fits in the row
+    n_trees  = n
+    gs_trees = gridspec.GridSpecFromSubplotSpec(
+        1, n_trees, subplot_spec=gs[1, :], wspace=0.25)
+    ax_tr   = [fig.add_subplot(gs_trees[0, i]) for i in range(n_trees)]
     ax_mat  = fig.add_subplot(gs[2, :])    # matrix — full width
     ax_code = fig.add_subplot(gs[3, :])    # code   — full width
 
     # ── Draw panels ───────────────────────────────────────────────────────────
     draw_scatter(ax_sc, states, sim_freq, boltzmann, kl)
     draw_db_table(ax_db, db_pairs)
-    for i in range(n_trees):
+    for i in range(n):
         draw_tree(ax_tr[i], states[i],
                   tree_raw.get(str(states[i]), []), states)
     draw_matrix(ax_mat, states, mat_raw)
