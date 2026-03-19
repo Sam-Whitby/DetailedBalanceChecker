@@ -177,11 +177,131 @@ RunWithBitsAT[alg_, state_, bits_List] := Module[
       ]
     ]
   );
-  result = Catch[alg[state, readBit, acceptTest], $dbc$tag, ($OutOfBits &)];
-  If[result === $OutOfBits, $OutOfBits,
-    {result, weight}
+  (* Run the algorithm with random-call interception.
+     RandomReal[], Random[], RandomInteger[], and RandomChoice[] are
+     shadowed via Block so algorithms written with native random calls
+     are analysed correctly without modification.
+     RandomVariate and similar unsupported calls throw $dbc$cantHandle. *)
+  result = Catch[
+    Block[{
+      (* RandomReal[] / Random[] → deferred comparison token that carries
+         the local acceptTest; UpValues (defined below) convert comparisons
+         to acceptTest calls with correct probability weights. *)
+      RandomReal = Function[{arg___},
+        If[{arg} === {},
+          $dbc$rand[acceptTest],
+          Throw[$dbc$cantHandle[
+            "RandomReal[" <> ToString[{arg}] <>
+            "]: only zero-argument form is supported; use RandomReal[]"],
+            $dbc$tag]]],
+      Random = Function[{}, $dbc$rand[acceptTest]],
+
+      (* RandomInteger: supported for power-of-2 ranges only. *)
+      RandomInteger = Function[{arg___},
+        Which[
+          (* RandomInteger[] or RandomInteger[1] → uniform {0,1} *)
+          {arg} === {} || {arg} === {1},
+            readBit[],
+          (* RandomInteger[{lo,hi}] with power-of-2 range *)
+          MatchQ[{arg}, {{_Integer, _Integer}}],
+            Module[{lo = {arg}[[1,1]], hi = {arg}[[1,2]], n, k},
+              n = hi - lo + 1;
+              Which[
+                n == 1, lo,
+                n > 1 && IntegerQ[Log2[n]],
+                  lo + $dbc$readBitsAsInt[Round[Log2[n]], readBit],
+                True,
+                  Throw[$dbc$cantHandle[
+                    "RandomInteger[{" <> ToString[lo] <> "," <> ToString[hi] <>
+                    "}]: range " <> ToString[n] <> " is not a power of 2; " <>
+                    "use readBit[] for binary choices"],
+                    $dbc$tag]
+              ]],
+          (* RandomInteger[n] → uniform {0,...,n} with n+1 = 2^k *)
+          MatchQ[{arg}, {_Integer?NonNegative}],
+            Module[{n = {arg}[[1]] + 1, k},
+              Which[
+                n == 1, 0,
+                n > 1 && IntegerQ[Log2[n]],
+                  $dbc$readBitsAsInt[Round[Log2[n]], readBit],
+                True,
+                  Throw[$dbc$cantHandle[
+                    "RandomInteger[" <> ToString[{arg}[[1]]] <>
+                    "]: range " <> ToString[n] <> " is not a power of 2"],
+                    $dbc$tag]
+              ]],
+          True,
+            Throw[$dbc$cantHandle[
+              "RandomInteger[" <> ToString[{arg}] <> "]: unsupported form"],
+              $dbc$tag]
+        ]],
+
+      (* RandomChoice[list]: supported when Length[list] is a power of 2. *)
+      RandomChoice = Function[{list_List},
+        Module[{n = Length[list], k},
+          Which[
+            n == 0, Throw[$dbc$cantHandle["RandomChoice[]: empty list"], $dbc$tag],
+            n == 1, list[[1]],
+            IntegerQ[Log2[n]],
+              list[[1 + $dbc$readBitsAsInt[Round[Log2[n]], readBit]]],
+            True,
+              Throw[$dbc$cantHandle[
+                "RandomChoice[list of length " <> ToString[n] <>
+                "]: not a power of 2; pad to nearest power of 2"],
+                $dbc$tag]
+          ]]],
+
+      (* Unsupported random functions: throw $dbc$cantHandle immediately. *)
+      RandomVariate    = Function[{___}, Throw[$dbc$cantHandle["RandomVariate"],    $dbc$tag]],
+      RandomSample     = Function[{___}, Throw[$dbc$cantHandle["RandomSample"],     $dbc$tag]],
+      RandomPermutation= Function[{___}, Throw[$dbc$cantHandle["RandomPermutation"],$dbc$tag]],
+      RandomWord       = Function[{___}, Throw[$dbc$cantHandle["RandomWord"],       $dbc$tag]],
+      RandomPrime      = Function[{___}, Throw[$dbc$cantHandle["RandomPrime"],      $dbc$tag]]
+    },
+    alg[state, readBit, acceptTest]
+    ],
+    $dbc$tag,
+    Function[{ex}, ex]   (* return thrown value as-is *)
+  ];
+  Which[
+    result === $OutOfBits, $OutOfBits,
+    MatchQ[result, $dbc$cantHandle[_]], result,
+    (* Detect unconsumed $dbc$rand token: RandomReal[] was never compared *)
+    !FreeQ[{result, weight}, $dbc$rand],
+      $dbc$cantHandle[
+        "RandomReal[]/Random[] result was used in an unsupported way " <>
+        "(not directly in a comparison like RandomReal[] < p)"],
+    True,
+      {result, weight}
   ]
 ]
+
+
+(* ================================================================
+   SECTION 1c – RANDOM CALL INTERCEPTION SUPPORT
+   ================================================================ *)
+
+(* Helper: read k fair bits and return the integer in {0,...,2^k-1}
+   they represent in big-endian binary order.
+   Each readBit[] call contributes factor 1/2 to the path weight. *)
+$dbc$readBitsAsInt[k_Integer, readBit_] :=
+  Fold[#1 * 2 + readBit[] &, 0, Range[k]]
+
+(* $dbc$rand[at] is the deferred uniform random token returned when
+   RandomReal[]/Random[] is called inside RunWithBitsAT.
+   'at' is the local acceptTest function so each token carries its own
+   bit-stream handle.
+   UpValues implement:  U ~ Uniform[0,1]
+     P(U < p)  = p    →  acceptTest[p]
+     P(U >= p) = 1-p  →  acceptTest[1-p]  (and symmetric forms) *)
+$dbc$rand /: Less[$dbc$rand[at_], p_]         := (at[p] == 1)
+$dbc$rand /: LessEqual[$dbc$rand[at_], p_]    := (at[p] == 1)
+$dbc$rand /: Greater[$dbc$rand[at_], p_]      := (at[1 - p] == 1)
+$dbc$rand /: GreaterEqual[$dbc$rand[at_], p_] := (at[1 - p] == 1)
+$dbc$rand /: Less[p_, $dbc$rand[at_]]         := (at[1 - p] == 1)
+$dbc$rand /: LessEqual[p_, $dbc$rand[at_]]    := (at[1 - p] == 1)
+$dbc$rand /: Greater[p_, $dbc$rand[at_]]      := (at[p] == 1)
+$dbc$rand /: GreaterEqual[p_, $dbc$rand[at_]] := (at[p] == 1)
 
 
 (* ================================================================
@@ -233,6 +353,13 @@ BuildTreeAT[seedState_, alg_, OptionsPattern[]] := Module[
           Print["  WARNING: MaxBitDepth=", maxDepth,
                 " reached at prefix ", bits, " for state ", s,
                 " -- path excluded."],
+        (* Unanalysable call (e.g. RandomVariate, non-power-of-2 range) *)
+        MatchQ[res, $dbc$cantHandle[_]],
+          Print["  ANALYSIS FAILED: algorithm contains a call that cannot be",
+                " converted to readBit/acceptTest:"];
+          Print["    ", res[[1]]];
+          Print["  See the README for supported random-call forms."];
+          Return[res, Module],
         True,
           {ns, w} = res;
           AppendTo[leaves, {bits, ns, w}];
@@ -336,17 +463,20 @@ BoltzmannWeightsAT[allStates_List, energy_, numBeta_] := Module[
 
 (* ----------------------------------------------------------------
    CheckAlgorithmSafety
-   Scans the DownValues of alg for calls to forbidden non-deterministic
-   functions.  An algorithm under test MUST obtain all randomness via
-   readBit[] and acceptTest[]; direct calls to Random*, time, or file
-   functions break the deterministic BFS enumeration.
+   Scans the DownValues of alg for calls that CANNOT be automatically
+   converted to readBit/acceptTest during BFS.
 
-   Returns True if safe, False (with printed warnings) if not.
+   Automatically intercepted (safe to use freely):
+     RandomReal[], Random[], RandomInteger[], RandomChoice[]
+
+   These are NOT interceptable and will cause analysis failure:
+     RandomVariate, RandomSample, RandomPermutation, AbsoluteTime, etc.
+
+   Returns True if no unhandleable calls found, False with warnings otherwise.
    ---------------------------------------------------------------- *)
-$forbiddenFunctions = {
-  Random, RandomReal, RandomInteger, RandomChoice, RandomSample,
-  RandomVariate, RandomPermutation, RandomWord, RandomPrime, RandomColor,
-  AbsoluteTime, SessionTime, TimeObject, DateObject, Now
+$unanalyzableFunctions = {
+  RandomVariate, RandomSample, RandomPermutation, RandomWord, RandomPrime,
+  RandomColor, AbsoluteTime, SessionTime, TimeObject, DateObject, Now
 };
 
 CheckAlgorithmSafety[alg_Symbol] := Module[
@@ -357,12 +487,14 @@ CheckAlgorithmSafety[alg_Symbol] := Module[
           "Is it defined before CheckAlgorithmSafety is called?"];
     Return[False]
   ];
-  found = Select[$forbiddenFunctions, !FreeQ[defs, #] &];
+  found = Select[$unanalyzableFunctions, !FreeQ[defs, #] &];
   If[found === {},
     True,
     Print["  SAFETY FAIL: algorithm '", alg,
-          "' contains forbidden non-deterministic calls: ", found];
-    Print["  All randomness must come from readBit[] and acceptTest[]."];
+          "' contains calls that cannot be converted to readBit/acceptTest: ",
+          found];
+    Print["  Note: RandomReal[], RandomInteger[], and RandomChoice[] ARE",
+          " supported and are intercepted automatically."];
     False
   ]
 ]
@@ -1082,6 +1214,19 @@ RunFullCheck[seedState_, alg_, energy_, numBeta_?NumericQ,
                 "MaxBitDepth" -> OptionValue["MaxBitDepth"],
                 "TimeLimit"   -> OptionValue["TimeLimit"],
                 "Verbose"     -> OptionValue["Verbose"]];
+
+  (* Bail out cleanly if the algorithm contains an unsupported call *)
+  If[MatchQ[treeData, $dbc$cantHandle[_]],
+    Print["\n", StringRepeat["=", 62]];
+    Print["ANALYSIS FAILED -- algorithm cannot be fully analysed."];
+    Print["Reason: ", treeData[[1]]];
+    Print[StringRepeat["=", 62]];
+    Return[<|"pass" -> False, "error" -> treeData[[1]],
+             "allStates" -> {}, "matrix" -> <||>,
+             "violations" -> {}, "counts" -> <||>,
+             "boltzmann" -> <||>, "kl" -> Indeterminate|>]
+  ];
+
   allStates = Sort @ Keys[treeData];
   n         = Length[allStates];
   matrix    = TreeATToMatrix[treeData];

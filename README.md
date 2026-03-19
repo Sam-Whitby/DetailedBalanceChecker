@@ -10,35 +10,47 @@ Produces a full diagnostic PNG report for each algorithm tested.
 
 Given an MCMC algorithm and a bare energy function the checker:
 
-1. **Builds the decision tree** by exhaustive BFS over all bit sequences the algorithm can consume. Each leaf is a (state, probability-weight) pair. The state space is **discovered automatically** from a single seed state — no list of states is required.
+1. **Builds the decision tree** by exhaustive BFS over all bit sequences the algorithm can consume. The state space is **discovered automatically** from a single seed state — no list of states is required.
 
 2. **Checks detailed balance exactly** — constructs the symbolic transition matrix and verifies T(i→j)·π(i) = T(j→i)·π(j) for every pair, using `FullSimplify` with β > 0. The result is an exact PASS or FAIL, not a statistical estimate.
 
-3. **Runs a numerical MCMC simulation** with genuine random bits and compares the visited-state histogram to the Boltzmann distribution, reporting the KL divergence as a sanity check.
+3. **Runs a numerical MCMC simulation** with genuine random bits and compares the visited-state histogram to the Boltzmann distribution, reporting the KL divergence as a sanity check. Note: a low KL divergence does **not** guarantee detailed balance — an algorithm can sample the correct stationary distribution without being reversible (e.g. a cyclic drift on a flat energy landscape).
 
 4. **Renders a PNG report** showing the decision trees, symbolic transition matrix, detailed-balance pair table, and simulated vs Boltzmann scatter plot.
 
 ### Why bits?
 
-Every random decision in the algorithm comes from `readBit[]` (returns 0 or 1) or `acceptTest[p]` (accept/reject with probability p). By fixing the bit sequence, the checker makes the algorithm **deterministic** and can enumerate all execution paths exactly.
+Every random decision in the algorithm flows through `readBit[]` (returns 0 or 1) or `acceptTest[p]` (accept/reject with probability p). By fixing the bit sequence the checker makes the algorithm **deterministic** and enumerates all execution paths exactly.
 
 - `readBit[]` consumes one fair-coin bit; contributes factor ½ to the path weight.
-- `acceptTest[p]` consumes one bit; contributes p (accept, bit=1) or 1−p (reject, bit=0) to the path weight.
-- The transition probability T(i→j) is the **sum of path weights** over all bit sequences that take state i to state j.
+- `acceptTest[p]` consumes one bit; contributes p (accept, bit=1) or 1−p (reject, bit=0).
+- T(i→j) = **sum of path weights** over all bit sequences that take state i to state j.
 
-The BFS extends a bit sequence by appending 0 and 1 whenever the algorithm requests more bits than are available. Variable-length paths (where different branches consume different numbers of bits) are handled automatically.
+The BFS extends a bit sequence by appending 0 and 1 whenever the algorithm requests more bits. Variable-length paths (different branches consuming different numbers of bits) are handled automatically.
 
-### Halting and safety
+### Automatic random-call interception
 
-- `MaxBitDepth` (default 20) caps the BFS tree depth per state; paths that reach the cap are excluded with a warning.
-- `TimeLimit` (seconds per state) provides a second safety net.
-- `CheckAlgorithmSafety[alg]` scans the algorithm's definition for forbidden non-deterministic calls (`RandomReal`, `RandomInteger`, etc.) that would break BFS enumeration. It is called automatically by `RunFullCheck`.
+Algorithms may use native Mathematica random functions. The checker intercepts these automatically during BFS:
+
+| Call | Converted to | Notes |
+|---|---|---|
+| `RandomReal[]` | deferred token → `acceptTest[p]` when compared to `p` | Works in `If[RandomReal[] < p, ...]` |
+| `Random[]` | same as `RandomReal[]` | Deprecated Mathematica form |
+| `RandomInteger[1]` or `RandomInteger[]` | `readBit[]` | Returns 0 or 1 |
+| `RandomInteger[{lo, hi}]` | reads log₂(hi−lo+1) bits | Range must be a power of 2 |
+| `RandomChoice[list]` | reads log₂(n) bits | List length must be a power of 2 |
+
+Calls that **cannot** be intercepted cause the analysis to abort with a clear error message:
+- `RandomVariate[dist]` — continuous distributions
+- `RandomInteger[{lo, hi}]` with non-power-of-2 range
+- `AbsoluteTime`, `SessionTime`, `Now` — time-dependent values
+- `RandomSample`, `RandomPermutation` — unsupported combinatorial sampling
+
+The numerical MCMC run always uses genuine random numbers regardless of interception.
 
 ---
 
-## Generalised API (recommended)
-
-The primary interface requires only a **single algorithm function** and a **single bare energy function**:
+## API
 
 ```mathematica
 RunFullCheck[seedState, alg, energy, numBeta, options...]
@@ -46,15 +58,15 @@ RunFullCheck[seedState, alg, energy, numBeta, options...]
 
 | Argument | Type | Description |
 |---|---|---|
-| `seedState` | any | One valid state; others are discovered automatically |
+| `seedState` | any | One valid state; others discovered automatically via BFS |
 | `alg` | function | `alg[state, readBit, acceptTest]` — see below |
-| `energy` | function | `energy[state]` → bare energy (no β). **Must return exact values (integers or rationals, not floats).** |
+| `energy` | function | `energy[state]` → bare energy (no β). Use exact values (integers or rationals). |
 | `numBeta` | number | Inverse temperature β for the numerical MCMC run |
 
 ### Algorithm function signature
 
 ```mathematica
-myAlg[state_Integer, readBit_, acceptTest_] := Module[
+myAlg[state_, readBit_, acceptTest_] := Module[
   {b, nbr, dE},
   b   = readBit[];                            (* consume 1 fair bit: returns 0 or 1 *)
   nbr = If[b == 0, left[state], right[state]];
@@ -63,35 +75,29 @@ myAlg[state_Integer, readBit_, acceptTest_] := Module[
 ]
 ```
 
-**Rules for algorithm construction:**
+The algorithm can also use `RandomInteger[]` and `RandomReal[]` directly (see interception table above). The `readBit_` and `acceptTest_` parameters may be left unused if all randomness comes from native calls.
 
-1. **Obtain all randomness from `readBit[]` or `acceptTest[p]`.** Never call `RandomReal[]`, `RandomInteger[]`, `RandomChoice[]`, or any other random/time function. The checker will flag these and they will break BFS.
+**Rules:**
 
-2. **`acceptTest[p]`** takes the acceptance probability p (a number or symbolic expression in β) and returns 1 (accept) or 0 (reject). Use `MetropolisProb[dE]` or any other valid probability expression.
+1. **Return a single next state.** The algorithm must return one state (any Mathematica expression), not a list.
 
-3. **`readBit[]`** returns 0 or 1. It is for discrete choices (which direction to propose, which sub-move to attempt, etc.), **not** for acceptance decisions — use `acceptTest` for those.
+2. **Use exact energy values** (integers or rationals like `1/2`). Floating-point energies introduce numerical coefficients that break symbolic simplification.
 
-4. **Return a single next state.** The algorithm must return one state (integer or any label), not a list of weighted outcomes.
+3. **β stays global and unassigned** during the symbolic DB check. Assign it numerically via `Block[{β = numBeta}, ...]` if needed inside the algorithm, or use `MetropolisProb[dE]` which handles this automatically.
 
-5. **Use exact energy values** (integers or rationals like `1/2`). Floating-point energies (like `0.5`) introduce `1.0 * β` instead of `β` in symbolic expressions, which `FullSimplify` may fail to simplify.
-
-6. **Energy function is called directly inside the algorithm** as a global function. The same function is used for both the symbolic check (where β remains unassigned) and the MCMC run (where `Block[{β = numBeta}, ...]` assigns a numeric value to β).
+4. **States can be anything** — integers, rationals, lists, associations. The checker works with any Mathematica expression as a state. This means multi-particle systems, continuous discretisations, and higher-dimensional lattices all work without special configuration.
 
 ### `MetropolisProb` and custom acceptance criteria
 
 `MetropolisProb[dE]` is provided by the library:
-
 ```
 MetropolisProb[dE] = Piecewise[{{1, dE ≤ 0}, {Exp[-β dE], dE > 0}}]
 ```
 
-Any acceptance probability that keeps β symbolic works. For example the Barker criterion:
-
+Any acceptance probability that keeps β symbolic works, for example the Barker criterion:
 ```mathematica
 BarkerProb[dE_] := 1 / (1 + Exp[β * dE])
 ```
-
-Both are valid to pass to `acceptTest[...]`.
 
 ### Options
 
@@ -111,26 +117,42 @@ Both are valid to pass to `acceptTest[...]`.
 ## Running the examples
 
 ```bash
-# Clone
 git clone https://github.com/Sam-Whitby/DetailedBalanceChecker.git ~/Desktop/DetailedBalanceChecker
 cd ~/Desktop/DetailedBalanceChecker
 
-# New generalised API (recommended)
+# Core examples (ring Kawasaki variants)
+wolframscript -file run_checks.wls
+
+# Variable-bit-depth examples
+wolframscript -file run_variable_bit.wls
+
+# New API examples (Barker, asymmetric proposal)
 wolframscript -file run_new_api.wls
 
-# Legacy API examples (also still work)
-wolframscript -file run_checks.wls
-wolframscript -file run_variable_bit.wls
+# Extended examples (multi-particle, continuous, native random calls, unanalyzable)
+wolframscript -file run_extended.wls
 ```
 
-### What `run_new_api.wls` tests
+### Example summary
 
-| Example | Algorithm | Expected |
-|---|---|---|
-| A | Kawasaki ring L=3, Metropolis | PASS |
-| B | Always-accept ring L=3 (no Metropolis) | FAIL |
-| C | Barker criterion ring L=4 | PASS |
-| D | Asymmetric proposal (3:1 bias) + Metropolis L=4 | FAIL |
+| Script | Example | Algorithm | Expected |
+|---|---|---|---|
+| run_checks | 1 | Kawasaki ring L=3, Metropolis | PASS |
+| run_checks | 2 | Always-accept ring L=3 | FAIL |
+| run_checks | 3 | Wrong acceptance sign | FAIL |
+| run_variable_bit | 4 | Two-speed Metropolis L=4 | PASS |
+| run_variable_bit | 5 | Biased rightward drift L=4 | FAIL |
+| run_new_api | A | Kawasaki ring L=3, Metropolis | PASS |
+| run_new_api | B | Always-accept ring L=3 | FAIL |
+| run_new_api | C | Barker criterion ring L=4 | PASS |
+| run_new_api | D | Asymmetric proposal + Metropolis L=4 | FAIL |
+| run_extended | A | Cyclic drift L=4 (flat energy) | DB FAIL, numerical PASS |
+| run_extended | B | Two-particle Kawasaki L=4 | PASS |
+| run_extended | C | Metropolis on discretised circle | PASS |
+| run_extended | D | Kawasaki with native RandomReal[] | PASS |
+| run_extended | E | Native RandomReal[], wrong sign | FAIL |
+| run_extended | F | Unanalyzable: RandomVariate | aborts |
+| run_extended | G | Unanalyzable: non-power-of-2 range | aborts |
 
 ---
 
@@ -142,7 +164,7 @@ Create a `.wl` file in `examples/` following this template:
 (* ---- system parameters ---- *)
 L        = 4
 eps      = {0, 1, 3, 2}          (* exact integers or rationals -- no floats *)
-numBeta  = 1                      (* exact integer or rational *)
+numBeta  = 1
 
 rightOf[s_Integer] := Mod[s,     L] + 1
 leftOf[s_Integer]  := Mod[s - 2, L] + 1
@@ -176,17 +198,31 @@ RunFullCheck[
 ]
 ```
 
----
+### Multi-particle and non-integer states
 
-## Legacy API
-
-The original five-argument form is still supported:
+The checker places no restrictions on state types. Some examples:
 
 ```mathematica
-RunFullCheck[allStates, symAlg, numAlg, symEnergy, numEnergy, options...]
+(* Two-particle state as a sorted list *)
+KawasakiMulti[{p1_Integer, p2_Integer}, readBit_, acceptTest_] := ...
+
+(* Continuous position as a rational number *)
+ContinuousMetropolis[x_Rational, readBit_, acceptTest_] := ...
 ```
 
-This requires separate symbolic and numeric versions of the algorithm and energy. See `examples/ring_kawasaki.wl` for a complete example. Use the generalised API for new work.
+Starting from a single seed state the BFS discovers all reachable states automatically, whatever type they have.
+
+---
+
+## Practical limits
+
+The symbolic check is exact but grows quickly:
+
+- **States**: Discovered automatically; keep to ≤ 10–15 for practical run times.
+- **Bit depth**: Each level doubles paths. `MaxBitDepth=20` covers most algorithms.
+- **FullSimplify**: The most expensive step. Piecewise Metropolis expressions with `{β > 0}` assumptions typically simplify in seconds; highly nested expressions may be slow.
+- **Float energies**: Must be exact (integers/rationals). Using `0.5` instead of `1/2` makes Piecewise conditions evaluate numerically during the symbolic phase, corrupting the result.
+- **Random call support**: `RandomReal[]` and `RandomInteger[]` are intercepted automatically. `RandomVariate`, non-power-of-2 `RandomInteger` ranges, and time functions cannot be analysed.
 
 ---
 
@@ -195,27 +231,23 @@ This requires separate symbolic and numeric versions of the algorithm and energy
 ```
 dbc_core.wl                   Core library — load this first
 show_report.py                Python/matplotlib report renderer
-run_new_api.wls               Generalised API runner (4 examples)
-run_checks.wls                Legacy API runner (3 examples)
-run_variable_bit.wls          Variable-bit-depth examples
+run_checks.wls                Core examples (3 ring Kawasaki variants)
+run_variable_bit.wls          Variable-bit-depth examples (2)
+run_new_api.wls               Barker + asymmetric-proposal examples (4)
+run_extended.wls              Extended feature examples (7)
 examples/
-  kawasaki_new.wl             L=3 ring, Metropolis and always-accept   [new API]
-  barker_ring.wl              L=4 ring, Barker (heat-bath) criterion   [new API, PASS]
-  asymmetric_proposal.wl      L=4 ring, biased proposal + Metropolis   [new API, FAIL]
-  ring_kawasaki.wl            L=3 ring, Metropolis                     [legacy API, PASS]
-  always_accept.wl            L=3 ring, always accept                  [legacy API, FAIL]
-  wrong_sign.wl               L=3 ring, wrong acceptance sign          [legacy API, FAIL]
-  variable_bit_pass.wl        L=4 ring, variable-bit two-speed hop     [legacy API, PASS]
-  variable_bit_fail.wl        L=4 ring, variable-bit biased drift      [legacy API, FAIL]
+  kawasaki_new.wl             L=3 ring, Metropolis and always-accept    [PASS/FAIL]
+  barker_ring.wl              L=4 ring, Barker (heat-bath) criterion    [PASS]
+  asymmetric_proposal.wl      L=4 ring, biased proposal + Metropolis    [FAIL]
+  ring_kawasaki.wl            L=3 ring, Kawasaki Metropolis             [PASS]
+  always_accept.wl            L=3 ring, always accept                  [FAIL]
+  wrong_sign.wl               L=3 ring, wrong acceptance sign          [FAIL]
+  variable_bit_pass.wl        L=4 ring, variable-bit two-speed hop     [PASS]
+  variable_bit_fail.wl        L=4 ring, variable-bit biased drift      [FAIL]
+  cyclic_drift.wl             L=4 ring, always-right, flat energy      [DB-FAIL, num-PASS]
+  multi_particle.wl           L=4 ring, 2 particles, hard-core         [PASS]
+  continuous_metropolis.wl    Discretised circle, rational states       [PASS]
+  random_native_pass.wl       Kawasaki using RandomReal[]/RandomInteger [PASS]
+  random_native_fail.wl       Wrong-sign Kawasaki with RandomReal[]    [FAIL]
+  unanalyzable.wl             Three algorithms with unsupported calls  [abort]
 ```
-
----
-
-## Practical limits
-
-The symbolic check is exact but grows quickly:
-
-- **States**: Discovered automatically; keep to ≤ 10 for practical run times.
-- **Bit depth**: Each level doubles paths. `MaxBitDepth=20` covers most algorithms; simple algorithms use 2–4 bits.
-- **FullSimplify**: Most expensive step. Piecewise Metropolis expressions with `{β > 0}` assumptions typically simplify in seconds. Unusual acceptance functions (nested exponentials, etc.) may be slow.
-- **Float warning**: Energy values must be exact (integers/rationals). Using `0.5` instead of `1/2` introduces floating-point coefficients that break symbolic simplification.
