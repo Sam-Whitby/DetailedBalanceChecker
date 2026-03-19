@@ -2,23 +2,21 @@
    Example: Algorithms that CANNOT be analysed by the checker
    ================================================================
 
-   Three algorithms illustrating different failure modes:
+   Two algorithms illustrating calls that cannot be intercepted:
 
    (A) RandomVariate -- sampling from a continuous distribution.
        Cannot be converted to readBit[]/acceptTest[] because the
        output is a continuous floating-point value, not a discrete
        bit.  The checker throws $dbc$cantHandle immediately.
 
-   (B) Non-power-of-2 RandomInteger range.
-       RandomInteger[{1,3}] produces 3 equally-likely values, but
-       3 is not a power of 2 so an exact binary representation does
-       not exist.  The checker reports the issue and aborts.
-
-   (C) AbsoluteTime -- a time-dependent call.
+   (B) AbsoluteTime -- a time-dependent call.
        Even if the result happens to be used for an acceptance
        decision, the value depends on wall-clock time and cannot
        be reproduced from a bit sequence.  CheckAlgorithmSafety
        flags this before the BFS even starts.
+
+   Note: RandomInteger[{1,3}] (non-power-of-2 range) IS now supported
+   via rejection sampling -- see examples/nonpower_of_two.wl.
 
    In each case RunFullCheck returns:
      <|"pass" -> False, "error" -> "reason...", ...|>
@@ -41,17 +39,7 @@ UnanalyzableVariate[state_Integer, readBit_, acceptTest_] := Module[
   If[u < MetropolisProb[dE], nbr, state]
 ]
 
-(* ---- (B) RandomInteger with non-power-of-2 range ---- *)
-UnanalyzableIntRange[state_Integer, readBit_, acceptTest_] := Module[
-  {dir, nbr, dE},
-  (* Range {1,3} has 3 values -- not a power of 2 *)
-  dir = RandomInteger[{1, 3}];
-  nbr = Mod[state + dir - 2, L$ua] + 1;
-  dE  = energy$ua[nbr] - energy$ua[state];
-  If[acceptTest[MetropolisProb[dE]] == 1, nbr, state]
-]
-
-(* ---- (C) AbsoluteTime: time-dependent, flagged by safety check ---- *)
+(* ---- (B) AbsoluteTime: time-dependent, flagged by safety check ---- *)
 UnanalyzableTime[state_Integer, readBit_, acceptTest_] := Module[
   {dir, nbr, dE},
   dir = readBit[];

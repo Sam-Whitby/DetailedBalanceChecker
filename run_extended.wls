@@ -9,8 +9,10 @@
      C. Continuous (rational) states  -- PASSES
      D. Native RandomReal[] usage, correct  -- PASSES
      E. Native RandomReal[] usage, wrong sign  -- FAILS
-     F. Unanalyzable (RandomVariate)  -- aborts with clear error
-     G. Unanalyzable (non-power-of-2 range)  -- aborts with clear error
+     F. Non-power-of-2 RandomInteger via rejection sampling  -- PASSES
+     G. Float literal acceptance probabilities  -- PASSES
+     H. Unanalyzable (RandomVariate)  -- aborts with clear error
+     I. Unanalyzable (AbsoluteTime)  -- aborts with clear error
 
    Run from terminal:
      wolframscript -file run_extended.wls
@@ -132,15 +134,61 @@ resultE = RunFullCheck[
 ];
 
 (* ================================================================
-   EXAMPLE F: Unanalyzable -- RandomVariate (aborts cleanly)
+   EXAMPLE F: Non-power-of-2 RandomInteger via rejection sampling  [PASS]
    ================================================================ *)
 Print["\n", StringRepeat["#", 62]];
-Print["EXAMPLE F: RandomVariate  (expected: analysis ABORTED)"];
+Print["EXAMPLE F: RandomInteger[{1,3}] via rejection sampling  (expected: PASS)"];
+Print["  Note: 2 bits read, value=3 paths silently discarded"];
+Print[StringRepeat["#", 62]];
+
+Get[scriptDir <> "examples/nonpower_of_two.wl"];
+
+resultF = RunFullCheck[
+  1,
+  KawasakiNonPow2,
+  energy$np,
+  numBeta$np,
+  "SystemName"    -> "Non-power-of-2 RandomInteger, L=3  [PASS]",
+  "AlgorithmCode" -> ReadString[scriptDir <> "examples/nonpower_of_two.wl"],
+  "MaxBitDepth"   -> 10,
+  "NSteps"        -> 80000,
+  "Verbose"       -> True,
+  "OpenWindow"    -> True
+];
+
+(* ================================================================
+   EXAMPLE G: Float literal acceptance probabilities  [PASS]
+   ================================================================ *)
+Print["\n", StringRepeat["#", 62]];
+Print["EXAMPLE G: Float literal probs (0.5, 1.0)  (expected: PASS)"];
+Print["  Note: Reals rationalised in acceptTest before symbolic check"];
+Print[StringRepeat["#", 62]];
+
+Get[scriptDir <> "examples/float_energy.wl"];
+
+resultG = RunFullCheck[
+  1,
+  KawasakiFloat,
+  energy$fe,
+  numBeta$fe,
+  "SystemName"    -> "Float literals rationalised, L=3  [PASS]",
+  "AlgorithmCode" -> ReadString[scriptDir <> "examples/float_energy.wl"],
+  "MaxBitDepth"   -> 10,
+  "NSteps"        -> 80000,
+  "Verbose"       -> True,
+  "OpenWindow"    -> True
+];
+
+(* ================================================================
+   EXAMPLE H: Unanalyzable -- RandomVariate (aborts cleanly)
+   ================================================================ *)
+Print["\n", StringRepeat["#", 62]];
+Print["EXAMPLE H: RandomVariate  (expected: analysis ABORTED)"];
 Print[StringRepeat["#", 62]];
 
 Get[scriptDir <> "examples/unanalyzable.wl"];
 
-resultF = RunFullCheck[
+resultH = RunFullCheck[
   1,
   UnanalyzableVariate,
   energy$ua,
@@ -151,27 +199,27 @@ resultF = RunFullCheck[
   "Verbose"       -> True,
   "OpenWindow"    -> False
 ];
-Print["  Result[error] = ", resultF["error"]];
+Print["  Result[error] = ", resultH["error"]];
 
 (* ================================================================
-   EXAMPLE G: Unanalyzable -- non-power-of-2 RandomInteger range
+   EXAMPLE I: Unanalyzable -- AbsoluteTime (aborts cleanly)
    ================================================================ *)
 Print["\n", StringRepeat["#", 62]];
-Print["EXAMPLE G: RandomInteger[{1,3}]  (expected: analysis ABORTED)"];
+Print["EXAMPLE I: AbsoluteTime  (expected: analysis ABORTED)"];
 Print[StringRepeat["#", 62]];
 
-resultG = RunFullCheck[
+resultI = RunFullCheck[
   1,
-  UnanalyzableIntRange,
+  UnanalyzableTime,
   energy$ua,
   numBeta$ua,
-  "SystemName"    -> "Unanalyzable: RandomInteger non-power-of-2",
+  "SystemName"    -> "Unanalyzable: AbsoluteTime",
   "MaxBitDepth"   -> 10,
   "NSteps"        -> 10000,
   "Verbose"       -> True,
   "OpenWindow"    -> False
 ];
-Print["  Result[error] = ", resultG["error"]];
+Print["  Result[error] = ", resultI["error"]];
 
 Print["\n", StringRepeat["=", 62]];
 Print["Extended examples complete."];

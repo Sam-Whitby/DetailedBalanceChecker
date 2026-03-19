@@ -37,12 +37,15 @@ Algorithms may use native Mathematica random functions. The checker intercepts t
 | `RandomReal[]` | deferred token → `acceptTest[p]` when compared to `p` | Works in `If[RandomReal[] < p, ...]` |
 | `Random[]` | same as `RandomReal[]` | Deprecated Mathematica form |
 | `RandomInteger[1]` or `RandomInteger[]` | `readBit[]` | Returns 0 or 1 |
-| `RandomInteger[{lo, hi}]` | reads log₂(hi−lo+1) bits | Range must be a power of 2 |
-| `RandomChoice[list]` | reads log₂(n) bits | List length must be a power of 2 |
+| `RandomInteger[{lo, hi}]` | reads k=⌈log₂(hi−lo+1)⌉ bits; out-of-range values silently discarded | Any integer range, power-of-2 or not |
+| `RandomInteger[n]` | reads k=⌈log₂(n+1)⌉ bits; out-of-range values silently discarded | Any non-negative upper bound |
+| `RandomChoice[list]` | reads k=⌈log₂(n)⌉ bits; out-of-range indices silently discarded | Any list length |
+| Float literals in `acceptTest` | rationalised: `0.5 → 1/2`, `0.12 → 3/25`, etc. | Algorithms can use floats without breaking symbolic simplification |
+
+**Non-power-of-2 ranges via rejection sampling.** For a range of n values the checker reads k = ⌈log₂(n)⌉ bits (2ᵏ outcomes). Bit strings that map to values ≥ n are silently discarded from the BFS — they represent the "rejection" branch. The surviving paths each have equal weight 1/2ᵏ and form the correct uniform distribution. The missing probability fraction is the same from every starting state, so the unnormalised transition matrix still satisfies detailed balance exactly.
 
 Calls that **cannot** be intercepted cause the analysis to abort with a clear error message:
 - `RandomVariate[dist]` — continuous distributions
-- `RandomInteger[{lo, hi}]` with non-power-of-2 range
 - `AbsoluteTime`, `SessionTime`, `Now` — time-dependent values
 - `RandomSample`, `RandomPermutation` — unsupported combinatorial sampling
 
@@ -81,7 +84,7 @@ The algorithm can also use `RandomInteger[]` and `RandomReal[]` directly (see in
 
 1. **Return a single next state.** The algorithm must return one state (any Mathematica expression), not a list.
 
-2. **Use exact energy values** (integers or rationals like `1/2`). Floating-point energies introduce numerical coefficients that break symbolic simplification.
+2. **Use exact energy values** (integers or rationals like `1/2`). Floating-point energies introduce numerical coefficients that break symbolic simplification. Floating-point *probabilities* passed to `acceptTest` are fine — they are rationalised automatically.
 
 3. **β stays global and unassigned** during the symbolic DB check. Assign it numerically via `Block[{β = numBeta}, ...]` if needed inside the algorithm, or use `MetropolisProb[dE]` which handles this automatically.
 
@@ -129,7 +132,8 @@ wolframscript -file run_variable_bit.wls
 # New API examples (Barker, asymmetric proposal)
 wolframscript -file run_new_api.wls
 
-# Extended examples (multi-particle, continuous, native random calls, unanalyzable)
+# Extended examples (multi-particle, continuous, native random calls,
+#                    non-power-of-2, float literals, unanalyzable)
 wolframscript -file run_extended.wls
 ```
 
@@ -151,8 +155,10 @@ wolframscript -file run_extended.wls
 | run_extended | C | Metropolis on discretised circle | PASS |
 | run_extended | D | Kawasaki with native RandomReal[] | PASS |
 | run_extended | E | Native RandomReal[], wrong sign | FAIL |
-| run_extended | F | Unanalyzable: RandomVariate | aborts |
-| run_extended | G | Unanalyzable: non-power-of-2 range | aborts |
+| run_extended | F | RandomInteger[{1,3}] rejection sampling | PASS |
+| run_extended | G | Float literal probs (0.5, 1.0) | PASS |
+| run_extended | H | Unanalyzable: RandomVariate | aborts |
+| run_extended | I | Unanalyzable: AbsoluteTime | aborts |
 
 ---
 
@@ -221,8 +227,8 @@ The symbolic check is exact but grows quickly:
 - **States**: Discovered automatically; keep to ≤ 10–15 for practical run times.
 - **Bit depth**: Each level doubles paths. `MaxBitDepth=20` covers most algorithms.
 - **FullSimplify**: The most expensive step. Piecewise Metropolis expressions with `{β > 0}` assumptions typically simplify in seconds; highly nested expressions may be slow.
-- **Float energies**: Must be exact (integers/rationals). Using `0.5` instead of `1/2` makes Piecewise conditions evaluate numerically during the symbolic phase, corrupting the result.
-- **Random call support**: `RandomReal[]` and `RandomInteger[]` are intercepted automatically. `RandomVariate`, non-power-of-2 `RandomInteger` ranges, and time functions cannot be analysed.
+- **Float energies**: Must be exact (integers/rationals). Using `0.5` instead of `1/2` for *energy values* makes Piecewise conditions evaluate numerically during the symbolic phase, corrupting the result. Float *acceptance probabilities* passed to `acceptTest` are automatically rationalised.
+- **Random call support**: `RandomReal[]`, `RandomInteger[]`, and `RandomChoice[]` are intercepted automatically for any range. `RandomVariate` and time functions cannot be analysed.
 
 ---
 
@@ -234,7 +240,7 @@ show_report.py                Python/matplotlib report renderer
 run_checks.wls                Core examples (3 ring Kawasaki variants)
 run_variable_bit.wls          Variable-bit-depth examples (2)
 run_new_api.wls               Barker + asymmetric-proposal examples (4)
-run_extended.wls              Extended feature examples (7)
+run_extended.wls              Extended feature examples (9)
 examples/
   kawasaki_new.wl             L=3 ring, Metropolis and always-accept    [PASS/FAIL]
   barker_ring.wl              L=4 ring, Barker (heat-bath) criterion    [PASS]
@@ -249,5 +255,7 @@ examples/
   continuous_metropolis.wl    Discretised circle, rational states       [PASS]
   random_native_pass.wl       Kawasaki using RandomReal[]/RandomInteger [PASS]
   random_native_fail.wl       Wrong-sign Kawasaki with RandomReal[]    [FAIL]
-  unanalyzable.wl             Three algorithms with unsupported calls  [abort]
+  nonpower_of_two.wl          RandomInteger[{1,3}] rejection sampling  [PASS]
+  float_energy.wl             Float literals (0.5, 1.0) rationalised   [PASS]
+  unanalyzable.wl             Two algorithms with unsupported calls    [abort]
 ```

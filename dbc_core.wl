@@ -171,9 +171,11 @@ RunWithBitsAT[alg_, state_, bits_List] := Module[
   acceptTest[p_] := (
     pos++;
     If[pos > Length[bits], Throw[$OutOfBits, $dbc$tag],
-      If[bits[[pos]] == 1,
-        weight *= p; 1,         (* accept: weight contributes p *)
-        weight *= (1 - p); 0   (* reject: weight contributes (1-p) *)
+      With[{pR = p /. {r_Real :> Rationalize[r]}},
+        If[bits[[pos]] == 1,
+          weight *= pR; 1,         (* accept: weight contributes p *)
+          weight *= (1 - pR); 0   (* reject: weight contributes (1-p) *)
+        ]
       ]
     ]
   );
@@ -196,39 +198,40 @@ RunWithBitsAT[alg_, state_, bits_List] := Module[
             $dbc$tag]]],
       Random = Function[{}, $dbc$rand[acceptTest]],
 
-      (* RandomInteger: supported for power-of-2 ranges only. *)
+      (* RandomInteger: exact for power-of-2 ranges; rejection sampling otherwise.
+         Rejection sampling: read k=Ceiling[Log2[n]] bits; if the value falls
+         outside [0,n-1] throw $dbc$outOfRange so BuildTreeAT silently discards
+         the path.  The missing probability fraction is uniform across all
+         starting states, so the unnormalised T still satisfies DB exactly. *)
       RandomInteger = Function[{arg___},
         Which[
           (* RandomInteger[] or RandomInteger[1] → uniform {0,1} *)
           {arg} === {} || {arg} === {1},
             readBit[],
-          (* RandomInteger[{lo,hi}] with power-of-2 range *)
+          (* RandomInteger[{lo,hi}] *)
           MatchQ[{arg}, {{_Integer, _Integer}}],
-            Module[{lo = {arg}[[1,1]], hi = {arg}[[1,2]], n, k},
+            Module[{lo = {arg}[[1,1]], hi = {arg}[[1,2]], n, k, val},
               n = hi - lo + 1;
               Which[
                 n == 1, lo,
-                n > 1 && IntegerQ[Log2[n]],
-                  lo + $dbc$readBitsAsInt[Round[Log2[n]], readBit],
-                True,
-                  Throw[$dbc$cantHandle[
-                    "RandomInteger[{" <> ToString[lo] <> "," <> ToString[hi] <>
-                    "}]: range " <> ToString[n] <> " is not a power of 2; " <>
-                    "use readBit[] for binary choices"],
-                    $dbc$tag]
+                n > 1,
+                  k   = Ceiling[Log2[n]];
+                  val = $dbc$readBitsAsInt[k, readBit];
+                  If[val >= n,
+                    Throw[$dbc$outOfRange, $dbc$tag],
+                    lo + val]
               ]],
-          (* RandomInteger[n] → uniform {0,...,n} with n+1 = 2^k *)
+          (* RandomInteger[n] → uniform {0,...,n} *)
           MatchQ[{arg}, {_Integer?NonNegative}],
-            Module[{n = {arg}[[1]] + 1, k},
+            Module[{n = {arg}[[1]] + 1, k, val},
               Which[
                 n == 1, 0,
-                n > 1 && IntegerQ[Log2[n]],
-                  $dbc$readBitsAsInt[Round[Log2[n]], readBit],
-                True,
-                  Throw[$dbc$cantHandle[
-                    "RandomInteger[" <> ToString[{arg}[[1]]] <>
-                    "]: range " <> ToString[n] <> " is not a power of 2"],
-                    $dbc$tag]
+                n > 1,
+                  k   = Ceiling[Log2[n]];
+                  val = $dbc$readBitsAsInt[k, readBit];
+                  If[val >= n,
+                    Throw[$dbc$outOfRange, $dbc$tag],
+                    val]
               ]],
           True,
             Throw[$dbc$cantHandle[
@@ -236,19 +239,18 @@ RunWithBitsAT[alg_, state_, bits_List] := Module[
               $dbc$tag]
         ]],
 
-      (* RandomChoice[list]: supported when Length[list] is a power of 2. *)
+      (* RandomChoice[list]: exact for power-of-2 lengths; rejection otherwise. *)
       RandomChoice = Function[{list_List},
-        Module[{n = Length[list], k},
+        Module[{n = Length[list], k, idx},
           Which[
             n == 0, Throw[$dbc$cantHandle["RandomChoice[]: empty list"], $dbc$tag],
             n == 1, list[[1]],
-            IntegerQ[Log2[n]],
-              list[[1 + $dbc$readBitsAsInt[Round[Log2[n]], readBit]]],
             True,
-              Throw[$dbc$cantHandle[
-                "RandomChoice[list of length " <> ToString[n] <>
-                "]: not a power of 2; pad to nearest power of 2"],
-                $dbc$tag]
+              k   = Ceiling[Log2[n]];
+              idx = $dbc$readBitsAsInt[k, readBit];
+              If[idx >= n,
+                Throw[$dbc$outOfRange, $dbc$tag],
+                list[[1 + idx]]]
           ]]],
 
       (* Unsupported random functions: throw $dbc$cantHandle immediately. *)
@@ -265,6 +267,7 @@ RunWithBitsAT[alg_, state_, bits_List] := Module[
   ];
   Which[
     result === $OutOfBits, $OutOfBits,
+    result === $dbc$outOfRange, $dbc$outOfRange,
     MatchQ[result, $dbc$cantHandle[_]], result,
     (* Detect unconsumed $dbc$rand token: RandomReal[] was never compared *)
     !FreeQ[{result, weight}, $dbc$rand],
@@ -353,7 +356,12 @@ BuildTreeAT[seedState_, alg_, OptionsPattern[]] := Module[
           Print["  WARNING: MaxBitDepth=", maxDepth,
                 " reached at prefix ", bits, " for state ", s,
                 " -- path excluded."],
-        (* Unanalysable call (e.g. RandomVariate, non-power-of-2 range) *)
+        (* Rejection-sampling dead-end: bit string mapped to out-of-range value.
+           Silently discard this path; the missing probability is state-independent
+           so the unnormalised transition matrix still satisfies detailed balance. *)
+        res === $dbc$outOfRange,
+          Null,
+        (* Unanalysable call (e.g. RandomVariate, AbsoluteTime) *)
         MatchQ[res, $dbc$cantHandle[_]],
           Print["  ANALYSIS FAILED: algorithm contains a call that cannot be",
                 " converted to readBit/acceptTest:"];
@@ -1067,7 +1075,8 @@ Options[RunFullCheck] = Join[
 ]
 
 RunFullCheck[allStates_List, symAlg_, numAlg_,
-             symEnergy_, numEnergy_, OptionsPattern[]] := Module[
+             symEnergy_, numEnergy_?(Head[#] =!= Rule && Head[#] =!= RuleDelayed &),
+             OptionsPattern[]] := Module[
   {name     = OptionValue["SystemName"],
    n        = Length[allStates],
    algCode, treeData, matrix, violations,
