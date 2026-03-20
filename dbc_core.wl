@@ -755,7 +755,7 @@ $normLeaf[leaf_List]            := leaf
 
 ExportReportJSON[args_Association, outPath_String] := Module[
   {name, allStates, treeData, matrix, violations, simFreq, bw, kl, algCode,
-   pass, n, violPairs, dbJSON, treeJSON, matJSON},
+   pass, n, dbJSON, treeJSON, matJSON},
 
   name       = args["name"];
   allStates  = args["allStates"];
@@ -766,9 +766,9 @@ ExportReportJSON[args_Association, outPath_String] := Module[
   bw         = args["bw"];
   kl         = N @ args["kl"];
   algCode    = args["algCode"];
-  pass       = violations === {};
-  n          = Length[allStates];
-  violPairs  = If[violations === {}, {}, #["pair"] & /@ violations];
+  (* Normalise violations: must be a plain list (guards against Null / Missing) *)
+  If[!ListQ[violations], violations = {}];
+  n = Length[allStates];
 
   (* Tree data as an ordered list (same order as allStates) so Python
      can look up by index rather than by state key string, which avoids
@@ -782,11 +782,18 @@ ExportReportJSON[args_Association, outPath_String] := Module[
       "str"  -> $probStr[Lookup[matrix, Key[{allStates[[i]], allStates[[j]]}], 0]]|>,
     {i, n}, {j, n}], 1];
 
+  (* Use AnyTrue with an explicit predicate so pair matching works correctly
+     regardless of how violations is structured internally. *)
   dbJSON = Flatten[Table[
     With[{si = allStates[[i]], sj = allStates[[j]]},
       <|"i" -> si, "j" -> sj,
-        "pass" -> (!MemberQ[violPairs, {si, sj}])|>],
+        "pass" -> !AnyTrue[violations,
+                    AssociationQ[#] && #["pair"] === {si, sj} &]|>],
     {i, n}, {j, i+1, n}], 1];
+
+  (* Derive the overall pass verdict from the db pair results so that the
+     banner and the table always agree. *)
+  pass = AllTrue[dbJSON, TrueQ @ #["pass"] &];
 
   Export[outPath,
     <|"name"      -> name,
@@ -987,22 +994,24 @@ MakeTransitionGrid[allStates_List, matrix_Association] := Module[
    MakeDBTable
    Colour-coded table of detailed-balance pair results.
    ---------------------------------------------------------------- *)
-MakeDBTable[allStates_List, violations_List] := Module[
-  {n = Length[allStates], pairs, violPairs, hdr, rows},
-  pairs     = Flatten[Table[{allStates[[i]],allStates[[j]]},
-                            {i,n},{j,i+1,n}], 1];
-  violPairs = If[violations === {}, {}, #["pair"] & /@ violations];
+MakeDBTable[allStates_List, violations_] := Module[
+  {viols, n, pairs, hdr, rows},
+  (* Normalise: guard against Null / Missing from the new API path *)
+  viols  = If[ListQ[violations], violations, {}];
+  n      = Length[allStates];
+  pairs  = Flatten[Table[{allStates[[i]],allStates[[j]]},
+                         {i,n},{j,i+1,n}], 1];
   hdr = Style[#, Bold, 10] & /@
         {"State i", "State j",
          "T(i\[Rule]j)\[CenterDot]\[Pi](i)  \[Minus]  T(j\[Rule]i)\[CenterDot]\[Pi](j)",
          "Result"};
   rows = Table[
-    With[{pass = !MemberQ[violPairs, pair]},
+    With[{pass = !AnyTrue[viols, AssociationQ[#] && #["pair"] === pair &]},
       {Style[ToString[pair[[1]]], 10],
        Style[ToString[pair[[2]]], 10],
        Style[If[pass, "= 0   (FullSimplify, \[Beta] > 0)",
                       ToString[TraditionalForm @
-                        First[Select[violations, #["pair"]===pair&],
+                        First[Select[viols, #["pair"]===pair&],
                               <|"residual"->"?"|>]["residual"]]],
              9, If[pass, Darker[Green,0.2], Darker[Red,0.1]]],
        Style[If[pass, "\[Checkmark] PASS", "\[Times] FAIL"],
@@ -1013,7 +1022,7 @@ MakeDBTable[allStates_List, violations_List] := Module[
     Frame      -> All,
     FrameStyle -> GrayLevel[0.82],
     Background -> {None, None,
-      Table[{i+1,4} -> If[!MemberQ[violPairs,pairs[[i]]],
+      Table[{i+1,4} -> If[!AnyTrue[viols, AssociationQ[#] && #["pair"]===pairs[[i]] &],
                            RGBColor[0.88,1.00,0.88],
                            RGBColor[1.00,0.88,0.88]],
             {i, Length[pairs]}]},
