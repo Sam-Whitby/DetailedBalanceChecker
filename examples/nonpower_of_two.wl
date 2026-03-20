@@ -15,7 +15,11 @@
    ================================================================ *)
 
 L$np       = 3
-eps$np     = {0, 1, 1/2}
+(* Symbolic site energies -- kept unassigned during the symbolic check.
+   Random numerical values are assigned automatically by RunFullCheck
+   when "SysParams" -> params$np is supplied. *)
+eps$np     = {\[Epsilon]np1, \[Epsilon]np2, \[Epsilon]np3}
+params$np  = <|"L" -> L$np, "eps" -> eps$np|>
 numBeta$np = 3/2
 
 rightOf$np[s_Integer] := Mod[s,     L$np] + 1

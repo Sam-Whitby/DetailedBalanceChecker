@@ -25,7 +25,11 @@
    ================================================================ *)
 
 L$br       = 4
-eps$br     = {0, 1, 3, 2}   (* bare site energies -- exact integers *)
+(* Symbolic site energies -- kept unassigned during the symbolic check.
+   Random numerical values are assigned automatically by RunFullCheck
+   when "SysParams" -> params$br is supplied. *)
+eps$br     = {\[Epsilon]br1, \[Epsilon]br2, \[Epsilon]br3, \[Epsilon]br4}
+params$br  = <|"L" -> L$br, "eps" -> eps$br|>
 numBeta$br = 1
 
 rightOf$br[s_Integer] := Mod[s,     L$br] + 1

@@ -12,6 +12,99 @@
 
 $dbcDir = DirectoryName[$InputFileName];
 
+
+(* ================================================================
+   SECTION 0 – SYSTEM PARAMETER UTILITIES
+   ================================================================ *)
+
+(* ----------------------------------------------------------------
+   RingDist
+   Minimum image convention distance between sites a and b on an
+   L-site periodic ring: min(|a-b|, L-|a-b|).
+   ---------------------------------------------------------------- *)
+RingDist[a_Integer, b_Integer, L_Integer] :=
+  Min[Abs[a - b], L - Abs[a - b]]
+
+(* ----------------------------------------------------------------
+   BuildRingEnergy
+   Constructs an energy function for particles on an L-site periodic
+   ring with optional pairwise interactions.
+
+   params = Association with keys:
+     "L"         -> lattice size (integer)
+     "eps"       -> list of length L (site energies, symbolic or numeric)
+     "couplings" -> list of coupling strengths indexed by ring distance d
+                    couplings[[d]] = coupling at distance d  (d=1,2,...)
+                    Hard-sphere exclusion (d=0) is handled by the
+                    algorithm itself, not the energy function.
+
+   For single-particle state (Integer):
+     E = eps[[s]]
+
+   For multi-particle state (List of integers):
+     E = sum_i eps[[p_i]]
+       + sum_{i<j} couplings[[RingDist[p_i, p_j, L]]]
+       (distances beyond Length[couplings] contribute 0)
+   ---------------------------------------------------------------- *)
+BuildRingEnergy[params_Association] :=
+  With[{L         = params["L"],
+        eps       = params["eps"],
+        couplings = Lookup[params, "couplings", {}]},
+    Function[state,
+      Which[
+        IntegerQ[state],
+          eps[[state]],
+        ListQ[state],
+          Total[eps[[#]] & /@ state] +
+          Total[
+            Table[
+              With[{d = RingDist[state[[i]], state[[j]], L]},
+                If[d >= 1 && d <= Length[couplings], couplings[[d]], 0]],
+              {i, Length[state]}, {j, i + 1, Length[state]}],
+            2]
+      ]
+    ]
+  ]
+
+(* ----------------------------------------------------------------
+   MakeRingParams
+   Creates a symbolic parameter Association for an L-site ring.
+   prefix    = short string making symbol names unique (e.g. "rk")
+   nCoupling = number of coupling distances to model (default 0)
+   Returns <|"L" -> L, "eps" -> {...}, "couplings" -> {...}|>
+   where eps and couplings contain unassigned globally-unique symbols.
+   Symbol names: \[Epsilon]<prefix><i> for site i,
+                 J<prefix><d> for coupling at distance d.
+   ---------------------------------------------------------------- *)
+MakeRingParams[L_Integer, prefix_String, nCoupling_Integer : 0] :=
+  <|"L"         -> L,
+    "eps"       -> Table[
+                     ToExpression["\[Epsilon]" <> prefix <> ToString[i]],
+                     {i, L}],
+    "couplings" -> Table[
+                     ToExpression["J" <> prefix <> ToString[d]],
+                     {d, 1, nCoupling}]|>
+
+(* ----------------------------------------------------------------
+   MakeNumericSubs
+   Generates reproducible random numerical substitution rules for the
+   symbolic parameters in params (as returned by MakeRingParams).
+   Site energies: drawn uniformly from (-2, 2).
+   Couplings:     drawn uniformly from (-1, 1).
+   seed = integer for SeedRandom reproducibility.
+   Returns a list of rules {sym -> numVal, ...}.
+   ---------------------------------------------------------------- *)
+MakeNumericSubs[params_Association, seed_Integer : 1] := Module[
+  {eps       = Lookup[params, "eps",       {}],
+   couplings = Lookup[params, "couplings", {}]},
+  SeedRandom[seed];
+  Join[
+    Thread[eps       -> RandomReal[{-2, 2}, Length[eps]]],
+    Thread[couplings -> RandomReal[{-1, 1}, Length[couplings]]]
+  ]
+]
+
+
 (* ================================================================
    SECTION 1 – PRIMITIVES
    ================================================================ *)
@@ -558,14 +651,14 @@ CheckEnergySafety[energy_] := True  (* anonymous functions pass through *)
    Uses FullSimplify with beta>0 to resolve Piecewise expressions.
    Returns list of violation records; empty list = PASS.
    ---------------------------------------------------------------- *)
-CheckDetailedBalance[matrix_Association, allStates_List, symEnergy_] := Module[
+CheckDetailedBalance[matrix_Association, allStates_List, symEnergy_,
+                     extraAssumptions_List : {}] := Module[
   {n = Length[allStates], violations = {}, si, sj, tij, tji, ei, ej, res},
   Do[
     si = allStates[[i]]; sj = allStates[[j]];
     tij = Lookup[matrix, Key[{si, sj}], 0];
     tji = Lookup[matrix, Key[{sj, si}], 0];
-    (* Rationalise any float energy values so FullSimplify receives exact
-       symbolic expressions: 0.5 -> 1/2, 1.0 -> 1, etc. *)
+    (* Rationalise any float energy values for backward compatibility *)
     ei  = symEnergy[si] /. {r_Real :> Rationalize[r]};
     ej  = symEnergy[sj] /. {r_Real :> Rationalize[r]};
     res = FullSimplify[
@@ -573,7 +666,7 @@ CheckDetailedBalance[matrix_Association, allStates_List, symEnergy_] := Module[
         tij * Exp[-\[Beta] * ei] -
         tji * Exp[-\[Beta] * ej]
       ],
-      Assumptions -> {\[Beta] > 0}
+      Assumptions -> Join[{\[Beta] > 0}, extraAssumptions]
     ];
     If[res =!= 0,
       AppendTo[violations, <|"pair" -> {si, sj}, "residual" -> res|>]
@@ -1231,14 +1324,17 @@ Options[RunFullCheck] = Join[
   Options[RunNumericalMCMCAT],
   {"SystemName"    -> "Unnamed system",
    "AlgorithmCode" -> Automatic,
-   "OpenWindow"    -> True}
+   "OpenWindow"    -> True,
+   "SysParams"     -> None,   (* Association with "eps"/"couplings" symbolic params *)
+   "NumericSeed"   -> 42}     (* seed for reproducible random numerical values *)
 ]
 
 RunFullCheck[seedState_, alg_, energy_, numBeta_?NumericQ,
              OptionsPattern[]] := Module[
   {name     = OptionValue["SystemName"],
    algCode, treeData, allStates, n,
-   matrix, violations, counts, bw, simFreq, kl, pass},
+   matrix, violations, counts, bw, simFreq, kl, pass,
+   sysParams, symEnergyVars, energyAssumptions, numSubs, numVals},
 
   algCode = OptionValue["AlgorithmCode"];
   If[algCode === Automatic,
@@ -1269,6 +1365,18 @@ RunFullCheck[seedState_, alg_, energy_, numBeta_?NumericQ,
                "violations" -> {}, "counts" -> <||>,
                "boltzmann" -> <||>, "kl" -> Indeterminate|>]
     ]
+  ];
+
+  (* ---- Determine symbolic energy parameters and assumptions ---- *)
+  sysParams = OptionValue["SysParams"];
+  If[AssociationQ[sysParams],
+    symEnergyVars    = Join[
+      Lookup[sysParams, "eps",       {}],
+      Lookup[sysParams, "couplings", {}]];
+    energyAssumptions = Thread[Element[symEnergyVars, Reals]],
+    (* else: energy is already fully numerical (no symbolic params) *)
+    symEnergyVars     = {};
+    energyAssumptions = {}
   ];
 
   (* ---- Terminal progress ---- *)
@@ -1307,7 +1415,10 @@ RunFullCheck[seedState_, alg_, energy_, numBeta_?NumericQ,
   (* ---- 2. Detailed balance check ---- *)
   Print["\n[2/3] Checking detailed balance for ",
         Binomial[n, 2], " pairs ..."];
-  violations = CheckDetailedBalance[matrix, allStates, energy];
+  (* energyAssumptions declares symbolic energy vars as real so that
+     PiecewiseExpand / FullSimplify can resolve the sign conditions
+     in MetropolisProb and similar acceptance criteria exactly. *)
+  violations = CheckDetailedBalance[matrix, allStates, energy, energyAssumptions];
   pass       = violations === {};
   If[pass,
     Print["      RESULT: PASS -- all pairs satisfy detailed balance exactly."],
@@ -1317,10 +1428,28 @@ RunFullCheck[seedState_, alg_, energy_, numBeta_?NumericQ,
   (* ---- 3. Numerical MCMC ---- *)
   Print["\n[3/3] Running ", OptionValue["NSteps"],
         " MCMC steps (numBeta = ", numBeta, ") ..."];
-  counts  = RunNumericalMCMCAT[allStates, alg, numBeta,
-              "NSteps"     -> OptionValue["NSteps"],
-              "WarmupFrac" -> OptionValue["WarmupFrac"]];
-  bw      = BoltzmannWeightsAT[allStates, energy, numBeta];
+
+  If[symEnergyVars =!= {},
+    (* Symbolic params: assign random numerical values via Block so that the
+       energy function evaluates numerically during MCMC. *)
+    numSubs = MakeNumericSubs[sysParams, OptionValue["NumericSeed"]];
+    numVals = Last /@ numSubs;
+    Print["      (Symbolic params: assigning random numerical values, seed = ",
+          OptionValue["NumericSeed"], ")"];
+    Block[Evaluate[symEnergyVars],
+      MapThread[Set, {symEnergyVars, numVals}];
+      counts = RunNumericalMCMCAT[allStates, alg, numBeta,
+                 "NSteps"     -> OptionValue["NSteps"],
+                 "WarmupFrac" -> OptionValue["WarmupFrac"]];
+      bw     = BoltzmannWeightsAT[allStates, energy, numBeta]
+    ],
+    (* Fully numerical energy: proceed directly *)
+    counts = RunNumericalMCMCAT[allStates, alg, numBeta,
+               "NSteps"     -> OptionValue["NSteps"],
+               "WarmupFrac" -> OptionValue["WarmupFrac"]];
+    bw     = BoltzmannWeightsAT[allStates, energy, numBeta]
+  ];
+
   simFreq = N[# / Total[counts]] & /@ counts;
   kl      = Total @ Table[
     With[{p = simFreq[s], q = N@bw[s]},

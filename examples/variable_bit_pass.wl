@@ -30,7 +30,11 @@
 
 (* ---- System parameters ---- *)
 L$vb       = 4
-eps$vb     = {0, 1, 3, 2}   (* exact integers, no beta *)
+(* Symbolic site energies -- kept unassigned during the symbolic check.
+   Random numerical values are assigned automatically by RunFullCheck
+   when "SysParams" -> params$vb is supplied. *)
+eps$vb     = {\[Epsilon]vb1, \[Epsilon]vb2, \[Epsilon]vb3, \[Epsilon]vb4}
+params$vb  = <|"L" -> L$vb, "eps" -> eps$vb|>
 numBeta$vb = 1
 
 rightOf$vb[s_Integer] := Mod[s,     L$vb] + 1

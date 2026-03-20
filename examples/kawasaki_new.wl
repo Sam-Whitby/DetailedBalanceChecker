@@ -14,7 +14,11 @@
    ================================================================ *)
 
 L$kn       = 3
-eps$kn     = {0, 1, 1/2}   (* bare site energies -- exact rationals, no beta *)
+(* Symbolic site energies -- kept unassigned during the symbolic check.
+   Random numerical values are assigned automatically by RunFullCheck
+   when "SysParams" -> params$kn is supplied. *)
+eps$kn     = {\[Epsilon]kn1, \[Epsilon]kn2, \[Epsilon]kn3}
+params$kn  = <|"L" -> L$kn, "eps" -> eps$kn|>
 numBeta$kn = 3/2
 
 rightOf$kn[s_Integer] := Mod[s,     L$kn] + 1   (* clockwise  *)

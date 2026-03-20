@@ -1,5 +1,5 @@
 (* ================================================================
-   Example: Two-particle Kawasaki on a ring -- PASSES
+   Example: Two-particle Kawasaki with pairwise coupling -- PASSES
    ================================================================
 
    System: L=4 ring, 2 distinguishable particles with hard-core
@@ -8,8 +8,14 @@
            There are C(4,2) = 6 states:
              {1,2}, {1,3}, {1,4}, {2,3}, {2,4}, {3,4}.
 
-   Energy: sum of bare site energies of the two occupied sites.
-           energy[{p1,p2}] = eps1 + eps2  (no beta).
+   Energy: sum of bare site energies of the two occupied sites
+           plus the nearest-neighbour pairwise interaction:
+
+             E({p1,p2}) = \[Epsilon]mp_p1 + \[Epsilon]mp_p2
+                        + Jmp1  (if ring-distance between p1 and p2 is 1)
+
+           All energy parameters are symbolic; random numerical values
+           are assigned automatically during the numerical MCMC check.
 
    Move:   pick a random particle (bit1), pick a random direction
            (bit2), propose a hop to the neighbouring site.
@@ -19,21 +25,25 @@
    The proposal is symmetric (each particle proposed with prob 1/2,
    each direction with prob 1/2) and Metropolis is correct, so
    detailed balance holds exactly.
-
-   This example demonstrates that the checker works for multi-particle
-   systems; the state is a list, not a single integer.
    ================================================================ *)
 
 L$mp   = 4
-eps$mp = {0, 1, 3, 2}   (* bare site energies, no beta *)
+(* Symbolic site energies and nearest-neighbour coupling.
+   Kept unassigned during the symbolic check; random numerical values
+   are assigned automatically by RunFullCheck via "SysParams" -> params$mp. *)
+eps$mp     = {\[Epsilon]mp1, \[Epsilon]mp2, \[Epsilon]mp3, \[Epsilon]mp4}
+params$mp  = <|"L" -> L$mp, "eps" -> eps$mp, "couplings" -> {Jmp1}|>
 numBeta$mp = 1
-
-energy$mp[{p1_Integer, p2_Integer}] :=
-  eps$mp[[p1]] + eps$mp[[p2]]
 
 (* Ring neighbours *)
 rightOf$mp[s_Integer] := Mod[s,     L$mp] + 1
 leftOf$mp[s_Integer]  := Mod[s - 2, L$mp] + 1
+
+(* Energy: site energies + nearest-neighbour coupling.
+   RingDist is provided by dbc_core.wl. *)
+energy$mp[{p1_Integer, p2_Integer}] :=
+  eps$mp[[p1]] + eps$mp[[p2]] +
+  If[RingDist[p1, p2, L$mp] == 1, Jmp1, 0]
 
 (* ================================================================
    Algorithm: single definition for both symbolic and numeric checks.
@@ -50,8 +60,8 @@ KawasakiMulti[{p1_Integer, p2_Integer}] :=
     (* Hard-core rejection: target occupied *)
     If[target == other,
       {p1, p2},          (* stay put *)
-      (* Metropolis acceptance *)
-      dE = eps$mp[[target]] - eps$mp[[mover]];
+      (* Metropolis acceptance using full pairwise energy *)
+      dE = energy$mp[Sort[{target, other}]] - energy$mp[{p1, p2}];
       If[RandomReal[] < MetropolisProb[dE],
         Sort[{target, other}],    (* accept: new sorted state *)
         {p1, p2}]                 (* reject: keep current state *)

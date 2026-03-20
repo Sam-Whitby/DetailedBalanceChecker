@@ -8,13 +8,13 @@ Produces a full diagnostic PNG report for each algorithm tested.
 
 ## What it does
 
-Given an MCMC algorithm and a bare energy function the checker:
+Given an MCMC algorithm and an energy function the checker:
 
 1. **Builds the decision tree** by exhaustive BFS over all random-call sequences the algorithm can make. The state space is **discovered automatically** from a single seed state.
 
-2. **Checks detailed balance exactly** — constructs the symbolic transition matrix and verifies T(i→j)·π(i) = T(j→i)·π(j) for every pair using `FullSimplify` with β > 0. The result is an exact PASS or FAIL.
+2. **Checks detailed balance exactly** — constructs the symbolic transition matrix and verifies T(i→j)·π(i) = T(j→i)·π(j) for every pair using `FullSimplify` with β > 0. Both β and all energy parameters are kept symbolic throughout. The result is an exact PASS or FAIL.
 
-3. **Runs a numerical MCMC simulation** with genuine random numbers and compares the visited-state histogram to the Boltzmann distribution (KL divergence). Note: a low KL divergence does **not** guarantee detailed balance — an algorithm can sample the correct stationary distribution without being reversible (e.g. cyclic drift on a flat landscape).
+3. **Runs a numerical MCMC simulation** with genuine random numbers and compares the visited-state histogram to the Boltzmann distribution (KL divergence). When symbolic energy parameters are supplied, random numerical values are assigned automatically (with a user-specified seed).
 
 4. **Renders a PNG report** showing the decision trees, symbolic transition matrix, detailed-balance pair table, and simulated vs Boltzmann scatter plot.
 
@@ -44,24 +44,35 @@ Calls that **cannot** be intercepted (cause analysis to abort):
 - `AbsoluteTime`, `SessionTime`, `Now` — time-dependent
 - `RandomSample`, `RandomPermutation`
 
-### Float support
+---
 
-Both float **acceptance probabilities** and float **energy values** are fully supported.
+## Symbolic energy parameters
 
-**Float acceptance probabilities**: Any `Real` value in a `RandomReal[] < p` comparison is rationalised at consumption time: `0.5 → 1/2`, `Exp[-β*1.0] → Exp[-β]`. This means `MetropolisProb` with a concrete float `dE` works correctly.
+All energy parameters — site energies **and** pairwise coupling strengths — are kept as unassigned symbols during the symbolic check. The transition matrix entries are therefore symbolic expressions in β, the site energies εᵢ, and the coupling constants Jd. `FullSimplify` with β > 0 verifies detailed balance across all possible energy values simultaneously.
 
-**Float energy values**: Any `Real` returned by `energy[s]` is rationalised in `CheckDetailedBalance` before `FullSimplify`: `energy[s] = 0.5` → `1/2`. Energy arrays like `{0., 1., 0.5}` work correctly.
+For the numerical MCMC check, random values are assigned automatically to the energy symbols (via `Block`) using a user-specified seed, so results are fully reproducible.
 
-**Float energy arrays are still NOT recommended** as primary input — use exact rationals (`{0, 1, 1/2}`) when possible.
+### System parameter helpers
 
-### Energy function safety check
+```mathematica
+(* Create a symbolic parameter set for an L-site ring *)
+params = MakeRingParams[L, "prefix", nCouplingDistances]
+(* Returns <|"L" -> L, "eps" -> {ε_prefix_1,...}, "couplings" -> {J_prefix_1,...}|> *)
 
-Before BFS, the checker scans the DownValues of the energy function for calls that would make the symbolic check meaningless:
+(* Build the energy function from params *)
+energy = BuildRingEnergy[params]
+(* energy[s_Integer] for single particle; energy[{p1,p2,...}] for multi-particle *)
+```
 
-- **Unsafe in energy**: `RandomReal`, `RandomInteger`, `RandomVariate`, `AbsoluteTime`, etc.
-- **Safe in energy**: exact arithmetic, lookup tables, `Cos`, `Sin`, `Exp` with symbolic arguments, etc.
+### Energy with pairwise interactions
 
-If unsafe calls are found, `RunFullCheck` aborts immediately with a clear error message. The same check is applied to the algorithm function.
+The energy of a multi-particle state `{p1, p2, ...}` on an L-site periodic ring:
+
+```
+E({p1,...,pn}) = Σᵢ ε_pᵢ + Σᵢ<ⱼ J_{d(pᵢ,pⱼ)}
+```
+
+where `d(a,b) = min(|a−b|, L−|a−b|)` is the ring distance and Jd is the coupling at distance d. Hard-sphere exclusion (d=0, same site) is enforced by the algorithm, not the energy function.
 
 ---
 
@@ -74,18 +85,16 @@ RunFullCheck[seedState, alg, energy, numBeta, options...]
 | Argument | Type | Description |
 |---|---|---|
 | `seedState` | any | One valid state; others discovered automatically via BFS |
-| `alg` | function | `alg[state]` — takes only the current state; uses native random calls |
-| `energy` | function | `energy[state]` → bare energy (no β). Integers, rationals, or floats. |
+| `alg` | function | `alg[state]` — uses native random calls |
+| `energy` | function | `energy[state]` → bare energy (no β). May be symbolic in energy parameters. |
 | `numBeta` | number | Inverse temperature β for the numerical MCMC run |
 
 ### Algorithm signature
 
-Algorithms take a single argument (the current state) and return the next state. Use native Mathematica random calls directly:
-
 ```mathematica
 MyAlg[state_Integer] := Module[
   {dir, nbr, dE},
-  dir = RandomInteger[];                         (* 0 or 1 *)
+  dir = RandomInteger[];
   nbr = If[dir == 0, left[state], right[state]];
   dE  = energy[nbr] - energy[state];
   If[RandomReal[] < MetropolisProb[dE], nbr, state]
@@ -97,7 +106,7 @@ MyAlg[state_Integer] := Module[
 1. **Return a single next state.** Any Mathematica expression is valid as a state.
 2. **Energy must be deterministic.** No random or time-dependent calls inside `energy`.
 3. **β stays unassigned** during the symbolic check. Use `MetropolisProb[dE]` or any acceptance function that keeps β symbolic.
-4. **States can be anything** — integers, rationals, lists, associations. The BFS discovers all reachable states from the seed automatically.
+4. **States can be anything** — integers, rationals, lists. The BFS discovers all reachable states from the seed automatically.
 
 ### `MetropolisProb` and custom acceptance criteria
 
@@ -114,6 +123,8 @@ BarkerProb[dE_] := 1 / (1 + Exp[β * dE])
 
 | Option | Default | Description |
 |---|---|---|
+| `"SysParams"` | `None` | Association from `MakeRingParams` with symbolic energy parameters. When supplied, random numerical values are assigned during the MCMC check. |
+| `"NumericSeed"` | `42` | Integer seed passed to `SeedRandom` for reproducible random energy values. |
 | `"SystemName"` | `"Unnamed system"` | Label shown in the report |
 | `"AlgorithmCode"` | `Automatic` | Source string shown in the report |
 | `"MaxBitDepth"` | `20` | Max BFS depth per state |
@@ -151,24 +162,23 @@ wolframscript -file run_extended.wls        # all extended features
 | run_new_api | C | Barker criterion ring L=4 | PASS |
 | run_new_api | D | Asymmetric proposal + Metropolis L=4 | FAIL |
 | run_extended | A | Cyclic drift L=4 (flat energy) | DB FAIL, numerical PASS |
-| run_extended | B | Two-particle Kawasaki L=4 | PASS |
+| run_extended | B | Two-particle Kawasaki + NN coupling L=4 | PASS |
 | run_extended | C | Metropolis on discretised circle | PASS |
 | run_extended | D | Kawasaki with native RandomReal[] | PASS |
 | run_extended | E | Native RandomReal[], wrong sign | FAIL |
 | run_extended | F | RandomInteger[{1,3}] rejection sampling | PASS |
-| run_extended | G | Float energy values + float acceptance probs | PASS |
-| run_extended | H | Unanalyzable: RandomVariate in algorithm | aborts |
-| run_extended | I | Unanalyzable: AbsoluteTime in algorithm | aborts |
-| run_extended | J | Unanalyzable: AbsoluteTime in energy | aborts |
-| run_extended | K | Unanalyzable: RandomVariate in energy | aborts |
+| run_extended | G | Two-particle + NN coupling, wrong sign | FAIL |
+| run_extended | H | Three-particle Kawasaki + NN+NNN coupling L=4 | PASS |
+| run_extended | I | Unanalyzable: RandomVariate in algorithm | aborts |
+| run_extended | J | Unanalyzable: AbsoluteTime in algorithm | aborts |
+| run_extended | K | Unanalyzable: AbsoluteTime in energy | aborts |
+| run_extended | L | Unanalyzable: RandomVariate in energy | aborts |
 
 ---
 
 ## Running your own algorithm
 
 ### Single-line terminal usage with `check.wls`
-
-The easiest way to check any algorithm from the terminal:
 
 ```bash
 wolframscript -file check.wls <alg_file> <seed_state> <alg_name> <energy_name> <num_beta> [options]
@@ -182,7 +192,7 @@ wolframscript -file check.wls <alg_file> <seed_state> <alg_name> <energy_name> <
 | `energy_name` | Name of the energy function defined in the file |
 | `num_beta` | Inverse temperature β for the numerical run |
 
-Optional `key=value` flags (no spaces around `=`):
+Optional `key=value` flags:
 
 | Option | Default |
 |---|---|
@@ -192,33 +202,21 @@ Optional `key=value` flags (no spaces around `=`):
 | `Verbose=True/False` | `True` |
 | `OpenWindow=True/False` | `True` |
 
-**Examples:**
-
-```bash
-# Run the built-in Kawasaki ring example
-wolframscript -file check.wls examples/ring_kawasaki.wl 1 KawasakiRing energy\$rk 1
-
-# Run with custom options
-wolframscript -file check.wls my_alg.wl 1 MyAlg energy 2.0 NSteps=80000 Verbose=False
-
-# Multi-particle (list seed state)
-wolframscript -file check.wls examples/multi_particle.wl "{1,2}" KawasakiMulti energy\$mp 1 NSteps=120000
-```
-
 ### Writing your algorithm file
 
-Create `my_algorithm.wl`:
-```mathematica
-L       = 4
-eps     = {0, 1, 3, 2}
-numBeta = 1
+Create `my_algorithm.wl` using symbolic energy parameters:
 
-energy[s_Integer] := eps[[s]]
+```mathematica
+Get["dbc_core.wl"]   (* provides MakeRingParams, BuildRingEnergy, RingDist *)
+
+params  = MakeRingParams[4, "my"]   (* symbolic eps for 4-site ring *)
+energy  = BuildRingEnergy[params]
+numBeta = 1
 
 MyAlg[state_Integer] := Module[
   {dir, nbr, dE},
   dir = RandomInteger[];
-  nbr = If[dir == 0, Mod[state-2, L]+1, Mod[state, L]+1];
+  nbr = If[dir == 0, Mod[state-2, 4]+1, Mod[state, 4]+1];
   dE  = energy[nbr] - energy[state];
   If[RandomReal[] < MetropolisProb[dE], nbr, state]
 ]
@@ -229,30 +227,29 @@ Then run:
 wolframscript -file check.wls my_algorithm.wl 1 MyAlg energy 1
 ```
 
-### Manual / inline usage
+### Inline usage
 
 ```bash
-# From the DetailedBalanceChecker directory:
 wolframscript -e '
 Get["dbc_core.wl"];
 
-L   = 4;
-eps = {0, 1, 3, 2};
+params  = MakeRingParams[4, "my", 1];   (* site energies + NN coupling *)
+energy  = BuildRingEnergy[params];
 numBeta = 1;
-
-energy[s_Integer] := eps[[s]];
 
 MyAlg[state_Integer] := Module[
   {dir, nbr, dE},
   dir = RandomInteger[];
-  nbr = If[dir == 0, Mod[state-2, L]+1, Mod[state, L]+1];
+  nbr = If[dir == 0, Mod[state-2, 4]+1, Mod[state, 4]+1];
   dE  = energy[nbr] - energy[state];
   If[RandomReal[] < MetropolisProb[dE], nbr, state]
 ];
 
 RunFullCheck[1, MyAlg, energy, numBeta,
-  "SystemName" -> "My algorithm",
-  "OpenWindow" -> False]
+  "SysParams"   -> params,
+  "NumericSeed" -> 42,
+  "SystemName"  -> "My algorithm",
+  "OpenWindow"  -> False]
 '
 ```
 
@@ -262,8 +259,7 @@ RunFullCheck[1, MyAlg, energy, numBeta,
 
 - **States**: Discovered automatically; keep to ≤ 10–15 for practical run times.
 - **Bit depth**: `MaxBitDepth=20` covers most algorithms.
-- **FullSimplify**: The most expensive step. Piecewise Metropolis expressions typically simplify in seconds.
-- **Float energies**: Supported — rationalised automatically in `CheckDetailedBalance`. Use exact rationals as primary input when possible.
+- **FullSimplify**: The most expensive step. With symbolic energies, Piecewise conditions are resolved branch-by-branch using exact algebra — typically a few seconds per pair.
 - **Random call support**: `RandomReal[]`, `RandomInteger[]`, and `RandomChoice[]` intercepted for any range. `RandomVariate`, time functions aborted cleanly.
 - **Numerical check and flat landscapes**: If all energies are equal the Boltzmann distribution is uniform, so KL ≈ 0 for ANY algorithm (even non-reversible ones). The symbolic DB check catches this — the numerical check is uninformative on flat landscapes by design.
 
@@ -278,7 +274,7 @@ check.wls                     Single-line terminal interface
 run_checks.wls                Core examples (3)
 run_variable_bit.wls          Variable-depth examples (2)
 run_new_api.wls               Barker + asymmetric-proposal examples (4)
-run_extended.wls              Extended feature examples (11, A-K)
+run_extended.wls              Extended feature examples (12, A-L)
 examples/
   ring_kawasaki.wl            L=3 ring, Kawasaki Metropolis             [PASS]
   always_accept.wl            L=3 ring, always accept                  [FAIL]
@@ -289,12 +285,12 @@ examples/
   barker_ring.wl              L=4 ring, Barker criterion               [PASS]
   asymmetric_proposal.wl      L=4 ring, biased proposal + Metropolis   [FAIL]
   cyclic_drift.wl             L=4 ring, always-right, flat energy      [DB-FAIL, num-PASS]
-  multi_particle.wl           L=4 ring, 2 particles, hard-core         [PASS]
+  multi_particle.wl           L=4 ring, 2 particles + NN coupling      [PASS]
+  coupling_3particle.wl       L=4 ring, 3 particles + NN+NNN coupling  [PASS]
   continuous_metropolis.wl    Discretised circle, rational states       [PASS]
   random_native_pass.wl       Kawasaki, native random calls            [PASS]
   random_native_fail.wl       Wrong-sign, native random calls          [FAIL]
   nonpower_of_two.wl          RandomInteger[{1,3}] rejection sampling  [PASS]
-  float_energy.wl             Float energy + float acceptance probs    [PASS]
   unanalyzable.wl             RandomVariate, AbsoluteTime in alg       [abort]
   unanalyzable_energy.wl      AbsoluteTime, RandomVariate in energy    [abort]
 ```

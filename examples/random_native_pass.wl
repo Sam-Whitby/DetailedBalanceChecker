@@ -12,7 +12,11 @@
    ================================================================ *)
 
 L$rn       = 3
-eps$rn     = {0, 1, 1/2}   (* exact rationals, no beta *)
+(* Symbolic site energies -- kept unassigned during the symbolic check.
+   Random numerical values are assigned automatically by RunFullCheck
+   when "SysParams" -> params$rn is supplied. *)
+eps$rn     = {\[Epsilon]rn1, \[Epsilon]rn2, \[Epsilon]rn3}
+params$rn  = <|"L" -> L$rn, "eps" -> eps$rn|>
 numBeta$rn = 3/2
 
 energy$rn[s_Integer] := eps$rn[[s]]
