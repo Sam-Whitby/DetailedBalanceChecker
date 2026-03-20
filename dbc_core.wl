@@ -1382,7 +1382,7 @@ RunFullCheck[seedState_, alg_, energy_, numBeta_?NumericQ,
     symEnergyVars    = Join[
       Lookup[sysParams, "eps",       {}],
       Lookup[sysParams, "couplings", {}]];
-    energyAssumptions = Thread[Element[symEnergyVars, Reals]],
+    energyAssumptions = Map[Element[#, Reals] &, symEnergyVars],
     (* else: energy is already fully numerical (no symbolic params) *)
     symEnergyVars     = {};
     energyAssumptions = {}
