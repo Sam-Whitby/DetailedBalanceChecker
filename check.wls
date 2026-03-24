@@ -94,40 +94,36 @@ Do[
    ================================================================ *)
 If[Length[posArgs] == 1,
 
-  (* Clear standard names to avoid stale definitions *)
-  Remove["Global`Algorithm"];
-  Remove["Global`energy"];
-  Remove["Global`seedState"];
-  Remove["Global`numBeta"];
-  Remove["Global`symParams"];
+  (* Clear standard names to avoid stale definitions from previous runs *)
+  ClearAll[Algorithm, energy, seedState, numBeta, symParams];
 
   Print["Loading: ", algFile];
   Get[algFile];
 
   (* Validate required definitions *)
-  If[!ValueQ[Global`seedState],
+  If[!ValueQ[seedState],
     Print["ERROR: 'seedState' not defined in ", posArgs[[1]]];
     Print["  Your .wl file must define: seedState = <a valid starting state>"];
     Exit[1]
   ];
-  If[!ValueQ[Global`numBeta] || !NumericQ[Global`numBeta],
+  If[!ValueQ[numBeta] || !NumericQ[numBeta],
     Print["ERROR: 'numBeta' (numeric inverse temperature) not defined in ", posArgs[[1]]];
     Exit[1]
   ];
-  If[Length[DownValues[Global`Algorithm]] == 0,
+  If[Length[DownValues[Algorithm]] == 0,
     Print["ERROR: 'Algorithm' function not defined in ", posArgs[[1]]];
     Exit[1]
   ];
-  If[Length[DownValues[Global`energy]] == 0,
+  If[Length[DownValues[energy]] == 0,
     Print["ERROR: 'energy' function not defined in ", posArgs[[1]]];
     Exit[1]
   ];
 
-  $seedState  = Global`seedState;
-  $numBeta    = Global`numBeta;
-  $alg        = Global`Algorithm;
-  $energy     = Global`energy;
-  $sysParams  = If[ValueQ[Global`symParams], Global`symParams, None];
+  $seedState  = seedState;
+  $numBeta    = numBeta;
+  $alg        = Algorithm;
+  $energy     = energy;
+  $sysParams  = If[ValueQ[symParams], symParams, None];
   $algName    = "Algorithm";
   If[systemName == "", systemName = FileBaseName[posArgs[[1]]]];
 

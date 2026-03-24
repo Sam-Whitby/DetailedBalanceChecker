@@ -152,16 +152,16 @@ wolframscript -file run_extended.wls        # extended feature examples
 
 | File | System | Expected |
 |---|---|---|
-| `kawasaki_1d_swap_pass.wl` | L=4 ring, 3 particles, bond-swap Kawasaki + NN coupling | **PASS** |
-| `kawasaki_1d_drift_fail.wl` | L=4 ring, 3 particles, rightward drift, flat energy | **FAIL** (symbolic), PASS (numerical) |
+| `kawasaki_1d_swap_pass.wl` | L=4 ring, 3 labeled particles, swap Kawasaki, pairwise coupling | **PASS** |
+| `kawasaki_1d_drift_fail.wl` | L=4 ring, 3 particles (sorted occupancy), rightward drift, flat energy | **FAIL** (symbolic), PASS (numerical) |
 | `kawasaki_2d_pass.wl` | 3×3 torus, 3 particles, standard Kawasaki | **PASS** |
 | `kawasaki_2d_fail.wl` | 3×3 torus, 3 particles, unbalanced particle selection | **FAIL** |
 
 ### What each example demonstrates
 
-**`kawasaki_1d_swap_pass.wl`** — Bond-swap Kawasaki (pick a random adjacent bond and exchange its contents) on a 4-site ring with 3 particles and nearest-neighbour coupling. Uses fully symbolic site energies and coupling constant. Demonstrates the standard pass case with a different proposal mechanism from the 1-particle hop examples.
+**`kawasaki_1d_swap_pass.wl`** — Kawasaki swap dynamics with 3 **labeled** (distinguishable) particles on a 4-site ring. State = length-4 list recording which particle label (1, 2, or 3) occupies each site, or 0 for empty. The algorithm picks a random bond; if both sites are occupied, the two particles swap positions and Metropolis acceptance is applied. Energy depends on which pair of labels are adjacent (three symbolic coupling constants J12, J13, J23). Because the hole never moves under pure swap dynamics, the reachable state space from seed {1,2,3,0} is the 6 permutations of labels 1, 2, 3 at sites 1–3 (all with the hole fixed at site 4). Proposal is symmetric and Metropolis is correct → **PASS**.
 
-**`kawasaki_1d_drift_fail.wl`** — Deterministic rightward current: the particle immediately left of the hole always hops right. Energy is flat, so the Boltzmann distribution is uniform and the MCMC histogram matches it perfectly (KL ≈ 0). Yet the symbolic check detects the persistent current (T(i→j) = 1, T(j→i) = 0 for each cyclic pair). Demonstrates that the numerical check is necessary but not sufficient.
+**`kawasaki_1d_drift_fail.wl`** — Deterministic rightward current on the sorted-occupancy representation (hole moves left one step per step, equivalent to all particles drifting right). Energy is flat (= 0), so the Boltzmann distribution is uniform over the 4 sorted states and the MCMC histogram matches it perfectly (KL ≈ 0). Yet the symbolic check detects the persistent current (T(i→j) = 1, T(j→i) = 0 for each cyclic pair). Demonstrates that the numerical check is necessary but not sufficient.
 
 **`kawasaki_2d_pass.wl`** — Standard Kawasaki on a 3×3 torus with rational site energies. Pick a random particle (rejection sampling over 3), pick a random direction (N/S/E/W), apply Metropolis. With 84 states the symbolic check requires several minutes; most state pairs have T = 0 trivially, so only ~300 adjacent pairs need `FullSimplify`. Includes `PlotState` and `PlotTransition` helper functions for visualising the 2D lattice from a Mathematica notebook.
 

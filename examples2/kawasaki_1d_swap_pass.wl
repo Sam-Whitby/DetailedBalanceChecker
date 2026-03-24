@@ -1,81 +1,74 @@
 (* ================================================================
-   1D Kawasaki bond-swap dynamics -- PASSES detailed balance
+   1D Kawasaki swap dynamics (labeled particles) -- PASSES DB
    ================================================================
 
-   System: L=4 ring, 3 particles, 1 hole.
-   State:  sorted triple {p1,p2,p3}, 1 <= p1 < p2 < p3 <= 4.
-           Four states: {1,2,3}, {1,2,4}, {1,3,4}, {2,3,4}.
+   System: L=4 ring, 3 distinguishable (labeled) particles, 1 hole.
+   State:  length-4 list {s1,s2,s3,s4} where s_i in {1,2,3} is the
+           label of the particle at site i, or 0 if the site is empty.
+           With 3 labeled particles the state space has 4*3*2 = 24 states.
 
-   Energy: site energies + nearest-neighbour pairwise coupling
-           E({p1,p2,p3}) = eps[[p1]] + eps[[p2]] + eps[[p3]]
-                         + J * (number of adjacent occupied pairs)
-           All energy parameters are symbolic; random values are
-           assigned automatically during the numerical MCMC check.
+   Energy: pairwise coupling between adjacent occupied pairs.
+           Only the IDENTITIES of the two particles matter, not their
+           order, so E uses Min/Max to pick the right coupling constant.
+           Three coupling constants: J12 (between labels 1 and 2),
+                                     J13 (between labels 1 and 3),
+                                     J23 (between labels 2 and 3).
+           All three are symbolic; random numerical values are assigned
+           automatically during the numerical MCMC check.
 
-   Move:   bond-swap Kawasaki.
-           Pick a random bond (RandomInteger[{0,3}], 2 bits exact).
-           Bond b connects site b+1 to site Mod[b+1,L]+1.
-           - particle-hole bond: particle hops, Metropolis acceptance.
-           - particle-particle bond: exchange = identity on sorted state.
-           - hole-hole bond: impossible with 3 particles on L=4.
+   Move:   Kawasaki SWAP.
+           Pick a random bond (RandomInteger[{0,3}], 2 bits, exact).
+           Bond b connects sites (b+1) and Mod[b+1,L]+1.
+           - Both occupied:  swap the two particles, Metropolis acceptance.
+           - Not both occupied: stay put.
 
-   Proposal is symmetric (each bond equally likely in both directions)
-   and Metropolis is correct, so detailed balance holds exactly.
+   Proposal is symmetric (bond b chosen with probability 1/4 in both
+   directions) and Metropolis is correct, so DB holds exactly.
    ================================================================ *)
 
 (* ---- System parameters ---- *)
-L$sw = 4
+L$kswap = 4
 
-(* Symbolic site energies and NN coupling.
-   Random numerical values are assigned automatically during the
-   numerical MCMC check when symParams is provided. *)
-eps$sw    = {\[Epsilon]sw1, \[Epsilon]sw2, \[Epsilon]sw3, \[Epsilon]sw4}
-symParams = <|"eps" -> eps$sw, "couplings" -> {Jsw1}|>
+(* Symbolic pairwise coupling constants.
+   Random values assigned automatically when symParams is provided. *)
+symParams = <|"couplings" -> {J12, J13, J23}|>
 
 numBeta = 1
 
-(* Ring minimum-image distance for site pair (a,b) on L-site ring *)
-ringDistSw[a_Integer, b_Integer] := Min[Abs[a - b], L$sw - Abs[a - b]]
+(* ---- Energy ---- *)
+(* Coupling between two occupied adjacent sites with labels a and b *)
+pairJ[a_Integer, b_Integer] :=
+  With[{lo = Min[a, b], hi = Max[a, b]},
+    If[lo == 1 && hi == 2, J12,
+     If[lo == 1 && hi == 3, J13, J23]]]
 
-(* Energy: site energies + pairwise NN coupling *)
-energy[{p1_Integer, p2_Integer, p3_Integer}] :=
-  eps$sw[[p1]] + eps$sw[[p2]] + eps$sw[[p3]] +
-  Jsw1 * (If[ringDistSw[p1, p2] == 1, 1, 0] +
-             If[ringDistSw[p1, p3] == 1, 1, 0] +
-             If[ringDistSw[p2, p3] == 1, 1, 0])
+(* Total energy: sum over all adjacent bonds of the coupling for
+   the pair of labels present (0 if either site is empty) *)
+energy[state_List] :=
+  Total[Table[
+    With[{a = state[[i]], b = state[[Mod[i, L$kswap] + 1]]},
+      If[a == 0 || b == 0, 0, pairJ[a, b]]],
+    {i, L$kswap}]]
 
 (* ================================================================
-   Algorithm: bond-swap Kawasaki.
-   RandomInteger[{0,3}] picks bond 0..3 (2 bits, no rejection).
-   Bond b: sites b+1 and Mod[b+1,L$sw]+1.
-   If one site occupied, one empty: propose hop with Metropolis.
-   If both occupied: exchange = no state change (identity on sorted state).
+   Algorithm: Kawasaki swap.
+   Pick bond, swap the two particles if both sites are occupied,
+   otherwise stay.  Metropolis acceptance applied to the energy
+   difference.
    ================================================================ *)
-Algorithm[{p1_Integer, p2_Integer, p3_Integer}] :=
-  Module[{b, s1, s2, occ, newOcc, dE},
-    occ = {p1, p2, p3};
-    (* Pick bond *)
-    b  = RandomInteger[{0, L$sw - 1}];
+Algorithm[state_List] :=
+  Module[{b, s1, s2, newState, dE},
+    b  = RandomInteger[{0, L$kswap - 1}];
     s1 = b + 1;
-    s2 = Mod[b + 1, L$sw] + 1;
-    Which[
-      (* Both occupied: swap = identity on sorted state *)
-      MemberQ[occ, s1] && MemberQ[occ, s2],
-        Sort[occ],
-      (* s1 occupied, s2 empty: particle at s1 hops to s2 *)
-      MemberQ[occ, s1],
-        newOcc = Sort[Append[DeleteCases[occ, s1], s2]];
-        dE = energy[newOcc] - energy[Sort[occ]];
-        If[RandomReal[] < MetropolisProb[dE], newOcc, Sort[occ]],
-      (* s1 empty, s2 occupied: particle at s2 hops to s1 *)
-      MemberQ[occ, s2],
-        newOcc = Sort[Append[DeleteCases[occ, s2], s1]];
-        dE = energy[newOcc] - energy[Sort[occ]];
-        If[RandomReal[] < MetropolisProb[dE], newOcc, Sort[occ]],
-      (* Both empty: cannot happen with 3 particles on L=4 *)
-      True, Sort[occ]
+    s2 = Mod[b + 1, L$kswap] + 1;
+    If[state[[s1]] == 0 || state[[s2]] == 0,
+      state,   (* one or both sites empty: stay *)
+      (* Swap the two particles *)
+      newState = ReplacePart[state, {s1 -> state[[s2]], s2 -> state[[s1]]}];
+      dE = energy[newState] - energy[state];
+      If[RandomReal[] < MetropolisProb[dE], newState, state]
     ]
   ]
 
 (* ---- Checker interface ---- *)
-seedState = {1, 2, 3}
+seedState = {1, 2, 3, 0}   (* particles 1,2,3 at sites 1,2,3; empty at 4 *)
