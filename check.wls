@@ -100,7 +100,7 @@ If[!FileExistsQ[algFile],
   Print["ERROR: File not found: ", posArgs[[1]]]; Exit[1]];
 
 (* ---- Load algorithm file ---- *)
-ClearAll[Algorithm, energy, BitsToState, numBeta, symParams];
+ClearAll[Algorithm, energy, BitsToState, numBeta, symParams, DisplayState];
 Print["Loading: ", algFile];
 Get[algFile];
 
@@ -198,7 +198,9 @@ Do[
   If[MemberQ[coveredStates, state], Continue[]];
 
   bitsStr  = StringJoin[ToString /@ bitString];
-  stateStr = ToString[state];
+  stateStr = If[Length[DownValues[DisplayState]] > 0,
+               DisplayState[state],
+               ToString[state]];
 
   (* ---- BFS: discover connected component from seed ---- *)
   treeData = BuildTreeAT[state, $alg,

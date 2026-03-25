@@ -2,136 +2,191 @@
    1D Kawasaki dynamics on a periodic ring -- PASSES detailed balance
    ================================================================
 
-   System: 1D periodic ring of L sites, with labeled (distinguishable)
-           particles of types 1, 2, 3, ... and holes (type 0).
-           L is NOT hard-coded; it is inferred from the bit string
-           supplied to BitsToState.
+   System: 1D periodic ring of L sites with labeled (distinguishable)
+           particles.  State[[i]] = 0 (empty) or k in {1,...,N}
+           (particle of type k).  All N particle types are distinct
+           and form a consecutive set {1,...,N}.  L is NOT hard-coded;
+           it is inferred from the bit string via BitsToState.
 
-   State:  A list of L integers.  state[[i]] = 0 means site i is empty;
-           state[[i]] = k (k >= 1) means site i holds particle of type k.
-           The particle types present in any valid state form a
-           consecutive set {1, 2, ..., n} for some n >= 0 (no gaps,
-           no duplicates).
+   Bit encoding -- bijective integer map:
+     The bit string is interpreted as a binary integer ID.  The ID
+     bijectively encodes a (L, N, positions, permutation) tuple:
 
-   Bit encoding (2 bits per site):
-     Each pair of consecutive bits encodes one site value:
-       00 -> 0 (empty)    01 -> 1 (type 1)
-       10 -> 2 (type 2)   11 -> 3 (type 3)
-     A bit string of length N (padded to even length with one leading
-     zero if N is odd) encodes an L = N/2 system.
-     BitsToState returns None for encodings that violate the
-     consecutive-labeling rule (e.g. type 2 present without type 1).
+       ID = countLPrefix[L]           (skip all smaller-L arrays)
+          + countLNPrefix[L, N]       (skip smaller-N arrays at this L)
+          + rankCombo(positions) * N! (within (L,N): position block)
+          + rankPerm(labels)          (within position block: label order)
 
-   Move:   Standard local Kawasaki dynamics.
-           Pick a bond b uniformly from the L bonds of the periodic
-           ring (RandomInteger[{0, L-1}]).  Bond b connects sites
-           b+1 and Mod[b+1, L]+1.  Swap the contents of the two sites
-           and apply Metropolis acceptance.  This covers all cases:
-           particle-particle swap, particle-hole hop, hole-hole (trivial).
+     where:
+       countL[L]       = Sum[C(L,k)*k!, {k,0,L}]  (all labeled arrays of length L)
+       countLPrefix[L] = Sum[countL[l], {l,0,L-1}] (cumulative offset)
 
-   Why DB holds:
-     The proposal is symmetric -- bond b is equally likely to be chosen
-     in the forward and reverse steps -- and Metropolis acceptance
-     satisfies the detailed-balance condition exactly.
+     This gives a clean bijection.  ID=0 (all-zero bit string) decodes
+     to the empty array {} and is mapped to None.  Every non-zero ID
+     uniquely identifies one labeled-particle array of some length L,
+     which becomes the seed state.  Short bit strings (leading zeros)
+     decode to small L systems; longer strings reach larger L.
 
-   Energy: Nearest-neighbour pairwise coupling between occupied sites.
-           Three symbolic coupling constants (J12, J13, J23) describe
-           the interaction between each ordered pair of particle types.
-           Random numerical values are assigned automatically for the
-           numerical MCMC check.
+     First few IDs:
+       1 -> {0}      (L=1, empty)
+       2 -> {1}      (L=1, one particle)
+       3 -> {0,0}    (L=2, empty)
+       4 -> {1,0}    (L=2, particle at site 1)
+       5 -> {0,1}    (L=2, particle at site 2)
+       6 -> {1,2}    (L=2, two particles)
+       7 -> {2,1}    (L=2, two particles reversed)
+       8 -> {0,0,0}  (L=3 ...)
+       ...
+       65 -> {1,2,3,4} (L=4, fully occupied)
+
+     With MaxBitString=1111111 (IDs 0-127) all L=1..4 systems
+     are covered; with MaxBitString=111111111 (IDs 0-511) L=5 too.
+
+   Move:   Standard local Kawasaki on the periodic ring.
+           Pick bond b in {0,...,L-1} uniformly (RandomInteger[{0,L-1}]).
+           Swap the two adjacent sites; apply Metropolis acceptance.
+
+   Energy: Nearest-neighbour pairwise coupling.  Coupling between
+           particle types a and b is the symbol J<min(a,b)><max(a,b)>
+           (e.g. J12, J23, J14 ...).  All coupling symbols listed in
+           symParams are kept symbolic during the symbolic check and
+           assigned random numerical values for the MCMC check.
 
    Run with:
      wolframscript -file check.wls examples3/kawasaki_1d.wl \
-                   MaxBitString=111111
-   (tests all 1-6 bit strings, covering L=1, L=2, L=3 systems)
+                   MaxBitString=1111111
+   This covers L=1,2,3,4 (all particle-number sectors of each).
    ================================================================ *)
 
 
 (* ================================================================
-   Symbolic coupling constants.
-   pairJ[a, b] = coupling between particle types a and b at adjacent
-   sites (a, b >= 1).  Symmetric: pairJ[a,b] = pairJ[b,a].
-   Types supported up to 3 (the maximum encodable with 2 bits).
+   Section 1 -- Bijective integer encoding
    ================================================================ *)
-symParams = <|"couplings" -> {J12, J13, J23}|>
 
-pairJ[a_Integer, b_Integer] :=
-  With[{lo = Min[a, b], hi = Max[a, b]},
-    Which[
-      lo == 1 && hi == 2, J12,
-      lo == 1 && hi == 3, J13,
-      lo == 2 && hi == 3, J23,
-      True, 0]]
+(* Counting: number of valid labeled arrays of given (L, N) *)
+$cL[L_Integer]            := $cL[L]   = Sum[Binomial[L, k] * k!, {k, 0, L}]
+$cLPre[L_Integer]         := $cLPre[L]  = Sum[$cL[l], {l, 0, L - 1}]
+$cLNPre[L_Integer, N_Integer] :=
+  $cLNPre[L, N] = Sum[Binomial[L, k] * k!, {k, 0, N - 1}]
+
+(* Rank a sorted 0-indexed combination {p_1,...,p_N} (combinatorial
+   number system: rank = Sum[C(p_i, i), {i,1,N}]) *)
+$rankCombo[pos_List] := Sum[Binomial[pos[[i]], i], {i, Length[pos]}]
+
+(* Inverse: k-th sorted 0-indexed N-combination from {0,...,L-1} *)
+$unrankCombo[rank_Integer, L_Integer, N_Integer] :=
+  Module[{pos = ConstantArray[0, N], x = L - 1, r = rank},
+    Do[
+      While[Binomial[x, i] > r, x--];
+      pos[[i]] = x;
+      r -= Binomial[x, i];
+      x--,
+      {i, N, 1, -1}];
+    pos]
+
+(* Rank a permutation of {1,...,N} in Lehmer (factorial number) order *)
+$rankPerm[perm_List] :=
+  Module[{n = Length[perm], elems = Range[Length[perm]], rank = 0, idx},
+    Do[
+      idx = FirstPosition[elems, perm[[i]]][[1]] - 1;
+      rank += idx * Factorial[n - i];
+      elems = Delete[elems, idx + 1],
+      {i, n}];
+    rank]
+
+(* Inverse: k-th permutation of {1,...,N} (0-indexed Lehmer order) *)
+$unrankPerm[k_Integer, n_Integer] :=
+  Module[{elems = Range[n], perm = {}, r = k, idx},
+    Do[
+      idx = Quotient[r, Factorial[i - 1]];
+      r   = Mod[r, Factorial[i - 1]];
+      AppendTo[perm, elems[[idx + 1]]];
+      elems = Delete[elems, idx + 1],
+      {i, n, 1, -1}];
+    perm]
+
+(* Decode an integer ID to the corresponding labeled-particle array.
+   ID=0 -> {} (empty array; BitsToState returns None for this). *)
+$decode[id_Integer] :=
+  Module[{L = 0, N = 0, r, rpos, rperm, pos, perm, arr},
+    While[$cLPre[L + 1] <= id, L++];
+    r = id - $cLPre[L];
+    While[$cLNPre[L, N + 1] <= r, N++];
+    r -= $cLNPre[L, N];
+    rpos  = Quotient[r, Factorial[N]];
+    rperm = Mod[r, Factorial[N]];
+    pos  = $unrankCombo[rpos, L, N];
+    perm = $unrankPerm[rperm, N];
+    arr  = ConstantArray[0, L];
+    Do[arr[[pos[[i]] + 1]] = perm[[i]], {i, N}];
+    arr]
+
 
 (* ================================================================
-   Energy
-   Sum of nearest-neighbour coupling constants over all L bonds of
-   the periodic ring.  L is inferred from the state length.
-   Empty sites (type 0) contribute zero to the energy.
+   Section 2 -- Symbolic coupling constants
    ================================================================ *)
+
+(* Coupling symbol for particle types a and b (a != b, a,b >= 1).
+   Uses the naming convention J<lo><hi> where lo=Min[a,b], hi=Max[a,b].
+   Additional types can be supported by increasing $maxCouplingN. *)
+$maxCouplingN = 4  (* supports particle types 1..4, i.e. L up to 4 fully occupied *)
+
+symParams = <|"couplings" ->
+  Flatten @ Table[
+    If[a < b, ToExpression["J" <> ToString[a] <> ToString[b]], Nothing],
+    {a, 1, $maxCouplingN}, {b, 1, $maxCouplingN}]|>
+
+(* pairJ[a, b]: coupling between types a and b at adjacent sites.
+   Returns 0 if either site is empty; otherwise the symbolic J symbol. *)
+$pairJ[a_Integer, b_Integer] :=
+  If[a == 0 || b == 0, 0,
+     ToExpression["J" <> ToString[Min[a, b]] <> ToString[Max[a, b]]]]
+
+
+(* ================================================================
+   Section 3 -- Energy function
+   ================================================================ *)
+
+(* Sum pairJ over all L nearest-neighbour bonds of the periodic ring.
+   L is inferred from the state length. *)
 energy[state_List] :=
   With[{L = Length[state]},
     Total[Table[
-      With[{a = state[[i]], b = state[[Mod[i, L] + 1]]},
-        If[a == 0 || b == 0, 0, pairJ[a, b]]],
+      $pairJ[state[[i]], state[[Mod[i, L] + 1]]],
       {i, L}]]]
 
+
 (* ================================================================
-   Algorithm: standard local Kawasaki on a periodic 1D ring.
-   L is computed from the state; no variable is hard-coded.
+   Section 4 -- Algorithm: standard local Kawasaki on a 1D ring
    ================================================================ *)
+
+(* L is computed from the state; no variable is hard-coded.
+   Pick bond b uniformly in {0,...,L-1}: sites b+1 and Mod[b+1,L]+1.
+   Swap the two sites unconditionally, then apply Metropolis. *)
 Algorithm[state_List] :=
   Module[{L, b, s1, s2, newState, dE},
-    L = Length[state];
-    (* Pick one of the L bonds uniformly *)
+    L  = Length[state];
     b  = RandomInteger[{0, L - 1}];
     s1 = b + 1;
     s2 = Mod[b + 1, L] + 1;
-    (* Swap the two sites (works for any pair: empty/empty, empty/particle,
-       particle/particle) *)
     newState = ReplacePart[state, {s1 -> state[[s2]], s2 -> state[[s1]]}];
     dE = energy[newState] - energy[state];
-    If[RandomReal[] < MetropolisProb[dE], newState, state]
-  ]
+    If[RandomReal[] < MetropolisProb[dE], newState, state]]
+
 
 (* ================================================================
-   BitsToState: map a bit string to a labeled-particle ring state.
-
-   Encoding: 2 bits per site.
-     bit pair -> site value:  00->0, 01->1, 10->2, 11->3
-   System size: L = (padded length) / 2
-     Odd-length strings are padded with one leading 0 to make L exact.
-
-   Validity rules (returns None if violated):
-     (1) The non-zero values in the state must be distinct.
-     (2) They must form the set {1, 2, ..., n} for n = count of particles
-         (no gaps -- e.g. {1,3} is invalid because type 2 is missing).
-
-   Examples:
-     {0}           -> pad to {0,0}  -> L=1, state {0}        (empty ring)
-     {1}           -> pad to {0,1}  -> L=1, state {1}        (one particle)
-     {0,1,1,0}     -> L=2, state {1,2}   (two-particle sector)
-     {1,0,0,1}     -> L=2, state {2,1}   (two-particle sector)
-     {0,1,1,0,1,1} -> L=3, state {1,2,3} (fully occupied)
+   Section 5 -- BitsToState
    ================================================================ *)
+
+(* Convert a bit string to a seed state for the checker.
+   The bit string is read as a binary integer ID; ID=0 (all-zero
+   string of any length) returns None.  For any other ID, $decode
+   returns the unique labeled-particle array with that index.
+   Different lengths of all-zero strings all decode to ID=0, so
+   they are all skipped -- the checker's deduplication handles
+   remaining duplicates (e.g. "1" and "01" both give ID=1 = {0}). *)
 BitsToState[bits_List] :=
-  Module[{paddedBits, L, pairs, state, nonzero, sortedVals},
-    (* Pad odd-length strings with one leading zero *)
-    paddedBits = If[OddQ[Length[bits]], Prepend[bits, 0], bits];
-    L = Length[paddedBits] / 2;
-    If[L == 0, Return[None]];
-    (* Decode 2-bit pairs into site values *)
-    pairs = Partition[paddedBits, 2];
-    state = FromDigits[#, 2] & /@ pairs;
-    (* Validate: non-zero values must be distinct and form {1,...,n} *)
-    nonzero    = Select[state, # != 0 &];
-    sortedVals = Sort[nonzero];
-    If[Length[nonzero] == 0, Return[state]];          (* all-empty is valid *)
-    If[sortedVals =!= Range[Max[sortedVals]],         (* gaps, e.g. {1,3} *)
-       Return[None]];
-    If[Length[Union[nonzero]] != Length[nonzero],     (* duplicate types   *)
-       Return[None]];
-    state
-  ]
+  Module[{id = FromDigits[bits, 2]},
+    If[id == 0, None, $decode[id]]]
 
 numBeta = 1
