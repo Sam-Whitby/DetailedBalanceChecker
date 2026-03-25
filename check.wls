@@ -18,18 +18,22 @@
       assigns random numeric values for the MCMC run)
 
    How it works:
-     The checker generates all bit strings of length 1 through
-     MaxBits, in order of increasing length and numerically within
-     each length.  For each bit string it calls BitsToState to
-     obtain a seed state.  If BitsToState returns None the string
-     is skipped.  Otherwise BFS discovers the full connected
-     component reachable from that seed.  If the component has
-     already been seen (deduplication), the string is skipped.
+     The checker generates all bit strings in order of increasing
+     length, then numerically within each length, stopping at (and
+     including) the specified MaxBitString.  For each bit string it
+     calls BitsToState to obtain a seed state.  If BitsToState returns
+     None the string is skipped.  Otherwise BFS discovers the full
+     connected component reachable from that seed.  If the component
+     has already been seen (deduplication), the string is skipped.
      Otherwise the checker runs the requested symbolic and/or
      numerical tests and prints one result row.
 
    Options (key=value, no spaces around =):
-     MaxBits=N           Largest bit string length to test (default 8)
+     MaxBitString=XXXX   Largest bit string to test, e.g. MaxBitString=111111
+                         Leading zeros are significant.  The checker
+                         tests all strings from length 1 up through
+                         the length of XXXX, stopping at XXXX within
+                         the final length. (default: MaxBitString=11111111)
      Mode=Symbolic       Symbolic detailed-balance check only
      Mode=Numerical      Numerical MCMC check only
      Mode=Both           Both checks (default)
@@ -60,7 +64,9 @@ If[Length[posArgs] < 1,
   Print["  symParams           (optional) symbolic parameter association"];
   Print[""];
   Print["Options (key=value, no spaces around =):"];
-  Print["  MaxBits=N           Bit string lengths 1..N (default 8)"];
+  Print["  MaxBitString=XXXX   Largest bit string to test (default 11111111)"];
+  Print["                      e.g. MaxBitString=111111 or MaxBitString=0111"];
+  Print["                      Leading zeros are significant."];
   Print["  Mode=Symbolic|Numerical|Both  (default Both)"];
   Print["  NSteps=N            MCMC steps per system (default 50000)"];
   Print["  MaxBitDepth=N       BFS depth cap (default 20)"];
@@ -68,19 +74,24 @@ If[Length[posArgs] < 1,
   Exit[1]];
 
 (* ---- Option defaults ---- *)
-maxBits     = 8;
-mode        = "Both";
-nSteps      = 50000;
-maxBitDepth = 20;
-verbose     = False;
+maxBitString = "11111111";
+mode         = "Both";
+nSteps       = 50000;
+maxBitDepth  = 20;
+verbose      = False;
 
 Do[
-  If[StringMatchQ[opt, "MaxBits="     ~~ __], maxBits     = ToExpression[StringDrop[opt,  8]]];
-  If[StringMatchQ[opt, "Mode="        ~~ __], mode        =              StringDrop[opt,  5]];
-  If[StringMatchQ[opt, "NSteps="      ~~ __], nSteps      = ToExpression[StringDrop[opt,  7]]];
-  If[StringMatchQ[opt, "MaxBitDepth=" ~~ __], maxBitDepth = ToExpression[StringDrop[opt, 12]]];
-  If[StringMatchQ[opt, "Verbose="     ~~ __], verbose     = ToExpression[StringDrop[opt,  8]]],
+  If[StringMatchQ[opt, "MaxBitString=" ~~ __], maxBitString = StringDrop[opt, 13]];
+  If[StringMatchQ[opt, "Mode="         ~~ __], mode         =              StringDrop[opt,  5]];
+  If[StringMatchQ[opt, "NSteps="       ~~ __], nSteps       = ToExpression[StringDrop[opt,  7]]];
+  If[StringMatchQ[opt, "MaxBitDepth="  ~~ __], maxBitDepth  = ToExpression[StringDrop[opt, 12]]];
+  If[StringMatchQ[opt, "Verbose="      ~~ __], verbose      = ToExpression[StringDrop[opt,  8]]],
   {opt, kvArgs}];
+
+(* ---- Validate MaxBitString ---- *)
+If[!StringMatchQ[maxBitString, ("0" | "1")..],
+  Print["ERROR: MaxBitString must contain only 0s and 1s, got: ", maxBitString];
+  Exit[1]];
 
 (* ---- Resolve file path ---- *)
 algFile = posArgs[[1]];
@@ -117,13 +128,22 @@ If[AssociationQ[$sysParams],
   $symVars        = {};
   $symAssumptions = {}];
 
-(* ---- Generate all bit strings of length 1..maxBits ---- *)
-(* Ordered by length first, then numerically within each length. *)
-allBitStrings = Flatten[
-  Table[IntegerDigits[i, 2, len],
-        {len, 1, maxBits},
-        {i, 0, 2^len - 1}],
-  1];
+(* ---- Generate all bit strings up to MaxBitString ---- *)
+(* Order: increasing length, then numerically within each length.
+   Within the final length, only up to and including MaxBitString. *)
+maxBitVec = ToExpression /@ Characters[maxBitString];
+maxLen     = Length[maxBitVec];
+maxVal     = FromDigits[maxBitVec, 2];
+
+allBitStrings = Join[
+  (* All bit strings of lengths 1 .. maxLen-1 *)
+  Flatten[Table[IntegerDigits[i, 2, len],
+                {len, 1, maxLen - 1},
+                {i,   0, 2^len - 1}],
+          1],
+  (* Bit strings of length maxLen from 00..0 up to MaxBitString *)
+  Table[IntegerDigits[i, 2, maxLen], {i, 0, maxVal}]
+];
 
 (* ---- Column widths ---- *)
 colBits  = 14;
@@ -141,12 +161,12 @@ totalWidth = colBits + colState + colN +
 Print[];
 Print[StringRepeat["=", 75]];
 Print["DETAILED BALANCE CHECKER -- BATCH MODE"];
-Print["File:        ", algFile];
-Print["MaxBits:     ", maxBits,
+Print["File:          ", algFile];
+Print["MaxBitString:  ", maxBitString,
       "  (", Length[allBitStrings], " bit strings generated)"];
-Print["Mode:        ", mode];
-If[mode =!= "Symbolic", Print["NSteps:      ", nSteps]];
-Print["MaxBitDepth: ", maxBitDepth];
+Print["Mode:          ", mode];
+If[mode =!= "Symbolic", Print["NSteps:        ", nSteps]];
+Print["MaxBitDepth:   ", maxBitDepth];
 Print[StringRepeat["=", 75]];
 Print[];
 
@@ -186,7 +206,7 @@ Do[
                "TimeLimit"   -> 120.,
                "Verbose"     -> verbose];
 
-  (* Algorithm contains an interceptable call -- print error and move on *)
+  (* Algorithm contains an uninterceptable call -- print error and move on *)
   If[MatchQ[treeData, $dbc$cantHandle[_]],
     Print[StringPadRight[bitsStr,  colBits],
           StringPadRight[stateStr, colState],
@@ -269,7 +289,7 @@ If[mode =!= "Symbolic" && (numPassCount + numFailCount) > 0,
 If[symFailCount == 0 && numFailCount == 0 && testedCount > 0,
   Print["All tested systems satisfy detailed balance."],
   If[testedCount == 0,
-    Print["No valid states found for bit strings of length 1..", maxBits, "."],
+    Print["No valid states found for the given MaxBitString."],
     Print["*** DETAILED BALANCE VIOLATION DETECTED ***"]
   ]
 ];
