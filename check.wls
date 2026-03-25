@@ -1,32 +1,41 @@
 #!/usr/bin/env wolframscript
 (* ================================================================
-   check.wls  --  Run a single detailed-balance check from terminal
+   check.wls  --  Exhaustive detailed-balance checker
    ================================================================
-   TWO MODES:
-
-   NEW (single-file) mode -- recommended:
+   Usage:
      wolframscript -file check.wls <alg_file> [options]
 
-     The .wl file must define:
-       energy[state_]    -- bare energy function (no beta)
-       Algorithm[state_] -- MCMC move function
-       seedState         -- a valid starting state
-       numBeta           -- inverse temperature (numeric)
-     Optionally define:
-       symParams = <|"eps" -> {...}, "couplings" -> {...}|>
-     for symbolic energy parameters (enables exact symbolic check).
+   The .wl file must define:
+     energy[state_]      bare energy function (no beta)
+     Algorithm[state_]   MCMC move function
+     BitsToState[bits_]  {0,1,...} list -> system state, or None if
+                         the bit pattern does not correspond to a
+                         valid state for this system
+     numBeta             numeric inverse temperature
+   Optionally:
+     symParams = <|"eps" -> {...}, "couplings" -> {...}|>
+     (keeps energy parameters symbolic during the symbolic check;
+      assigns random numeric values for the MCMC run)
 
-   LEGACY mode -- for existing examples:
-     wolframscript -file check.wls \
-       <alg_file> <seed_state> <alg_name> <energy_name> <num_beta> \
-       [options]
+   How it works:
+     The checker generates all bit strings of length 1 through
+     MaxBits, in order of increasing length and numerically within
+     each length.  For each bit string it calls BitsToState to
+     obtain a seed state.  If BitsToState returns None the string
+     is skipped.  Otherwise BFS discovers the full connected
+     component reachable from that seed.  If the component has
+     already been seen (deduplication), the string is skipped.
+     Otherwise the checker runs the requested symbolic and/or
+     numerical tests and prints one result row.
 
-   Named options (key=value, no spaces around =):
-     NSteps=N           Number of MCMC steps (default 100000)
-     MaxBitDepth=N      Max BFS depth (default 20)
-     SystemName=label   Label in the PNG report
-     Verbose=True/False Print BFS progress (default True)
-     OpenWindow=True/False  Open PNG report when done (default True)
+   Options (key=value, no spaces around =):
+     MaxBits=N           Largest bit string length to test (default 8)
+     Mode=Symbolic       Symbolic detailed-balance check only
+     Mode=Numerical      Numerical MCMC check only
+     Mode=Both           Both checks (default)
+     NSteps=N            MCMC steps per seed state (default 50000)
+     MaxBitDepth=N       BFS tree depth cap per state (default 20)
+     Verbose=True/False  Print per-state BFS progress (default False)
    ================================================================ *)
 
 scriptDir = DirectoryName[$InputFileName];
@@ -35,167 +44,233 @@ Get[scriptDir <> "dbc_core.wl"];
 (* ---- Parse command-line arguments ---- *)
 args = $ScriptCommandLine;
 If[Length[args] >= 1 && StringMatchQ[args[[1]], ___ ~~ "check.wls"],
-  args = Rest[args]
-];
+  args = Rest[args]];
 
-(* Separate positional args from key=value options *)
 posArgs = Select[args, !StringMatchQ[#, __ ~~ "=" ~~ __] &];
-kvArgs  = Select[args, StringMatchQ[#,  __ ~~ "=" ~~ __] &];
+kvArgs  = Select[args,  StringMatchQ[#, __ ~~ "=" ~~ __] &];
 
 If[Length[posArgs] < 1,
-  Print["Usage (new mode):    wolframscript -file check.wls <alg_file> [options]"];
-  Print["Usage (legacy mode): wolframscript -file check.wls <alg_file> <seed_state> <alg_name> <energy_name> <num_beta> [options]"];
+  Print["Usage: wolframscript -file check.wls <alg_file> [options]"];
   Print[""];
-  Print["New mode: .wl file must define Algorithm, energy, seedState, numBeta."];
-  Print["          Optionally define symParams = <|\"eps\" -> {...}, ...|>."];
+  Print["The .wl file must define:"];
+  Print["  energy[state_]      bare energy (no beta)"];
+  Print["  Algorithm[state_]   MCMC move function"];
+  Print["  BitsToState[bits_]  {0,1,...} -> state, or None if invalid"];
+  Print["  numBeta             numeric inverse temperature"];
+  Print["  symParams           (optional) symbolic parameter association"];
   Print[""];
-  Print["Options (key=value):"];
-  Print["  NSteps=N           (default 100000)"];
-  Print["  MaxBitDepth=N      (default 20)"];
-  Print["  SystemName=label   (default: algorithm name)"];
-  Print["  Verbose=True/False (default True)"];
-  Print["  OpenWindow=True/False (default True)"];
-  Exit[1]
-];
+  Print["Options (key=value, no spaces around =):"];
+  Print["  MaxBits=N           Bit string lengths 1..N (default 8)"];
+  Print["  Mode=Symbolic|Numerical|Both  (default Both)"];
+  Print["  NSteps=N            MCMC steps per system (default 50000)"];
+  Print["  MaxBitDepth=N       BFS depth cap (default 20)"];
+  Print["  Verbose=True/False  Per-state BFS output (default False)"];
+  Exit[1]];
 
-(* ---- Resolve algorithm file path ---- *)
-algFile = posArgs[[1]];
-If[!FileExistsQ[algFile],
-  algFile = scriptDir <> algFile
-];
-If[!FileExistsQ[algFile],
-  Print["ERROR: Algorithm file not found: ", posArgs[[1]]];
-  Exit[1]
-];
-
-(* ---- Parse optional key=value arguments ---- *)
-nSteps      = 100000;
+(* ---- Option defaults ---- *)
+maxBits     = 8;
+mode        = "Both";
+nSteps      = 50000;
 maxBitDepth = 20;
-systemName  = ""; (* filled in after loading *)
-verbose     = True;
-openWindow  = True;
+verbose     = False;
 
 Do[
-  If[StringMatchQ[opt, "NSteps=" ~~ __],
-    nSteps = ToExpression[StringDrop[opt, 7]]];
-  If[StringMatchQ[opt, "MaxBitDepth=" ~~ __],
-    maxBitDepth = ToExpression[StringDrop[opt, 12]]];
-  If[StringMatchQ[opt, "SystemName=" ~~ __],
-    systemName = StringDrop[opt, 11]];
-  If[StringMatchQ[opt, "Verbose=" ~~ __],
-    verbose = ToExpression[StringDrop[opt, 8]]];
-  If[StringMatchQ[opt, "OpenWindow=" ~~ __],
-    openWindow = ToExpression[StringDrop[opt, 11]]],
-  {opt, kvArgs}
+  If[StringMatchQ[opt, "MaxBits="     ~~ __], maxBits     = ToExpression[StringDrop[opt,  8]]];
+  If[StringMatchQ[opt, "Mode="        ~~ __], mode        =              StringDrop[opt,  5]];
+  If[StringMatchQ[opt, "NSteps="      ~~ __], nSteps      = ToExpression[StringDrop[opt,  7]]];
+  If[StringMatchQ[opt, "MaxBitDepth=" ~~ __], maxBitDepth = ToExpression[StringDrop[opt, 12]]];
+  If[StringMatchQ[opt, "Verbose="     ~~ __], verbose     = ToExpression[StringDrop[opt,  8]]],
+  {opt, kvArgs}];
+
+(* ---- Resolve file path ---- *)
+algFile = posArgs[[1]];
+If[!FileExistsQ[algFile], algFile = scriptDir <> algFile];
+If[!FileExistsQ[algFile],
+  Print["ERROR: File not found: ", posArgs[[1]]]; Exit[1]];
+
+(* ---- Load algorithm file ---- *)
+ClearAll[Algorithm, energy, BitsToState, numBeta, symParams];
+Print["Loading: ", algFile];
+Get[algFile];
+
+(* ---- Validate required symbols ---- *)
+If[Length[DownValues[Algorithm]] == 0,
+  Print["ERROR: 'Algorithm' not defined in ", posArgs[[1]]]; Exit[1]];
+If[Length[DownValues[energy]] == 0,
+  Print["ERROR: 'energy' not defined in ", posArgs[[1]]]; Exit[1]];
+If[Length[DownValues[BitsToState]] == 0,
+  Print["ERROR: 'BitsToState' not defined in ", posArgs[[1]]]; Exit[1]];
+If[!ValueQ[numBeta] || !NumericQ[numBeta],
+  Print["ERROR: 'numBeta' (numeric) not defined in ", posArgs[[1]]]; Exit[1]];
+
+$alg       = Algorithm;
+$energy    = energy;
+$numBeta   = numBeta;
+$sysParams = If[ValueQ[symParams], symParams, None];
+
+(* ---- Symbolic energy parameters ---- *)
+If[AssociationQ[$sysParams],
+  $symVars        = Join[Lookup[$sysParams, "eps",       {}],
+                         Lookup[$sysParams, "couplings", {}]];
+  $symAssumptions = Map[Element[#, Reals] &, $symVars],
+  (* else: energy is purely numeric *)
+  $symVars        = {};
+  $symAssumptions = {}];
+
+(* ---- Generate all bit strings of length 1..maxBits ---- *)
+(* Ordered by length first, then numerically within each length. *)
+allBitStrings = Flatten[
+  Table[IntegerDigits[i, 2, len],
+        {len, 1, maxBits},
+        {i, 0, 2^len - 1}],
+  1];
+
+(* ---- Column widths ---- *)
+colBits  = 14;
+colState = 26;
+colN     = 9;
+colSym   = 10;
+colKL    = 12;
+colNum   = 10;
+
+totalWidth = colBits + colState + colN +
+  If[mode =!= "Numerical", colSym, 0] +
+  If[mode =!= "Symbolic",  colKL + colNum, 0];
+
+(* ---- Print header ---- *)
+Print[];
+Print[StringRepeat["=", 75]];
+Print["DETAILED BALANCE CHECKER -- BATCH MODE"];
+Print["File:        ", algFile];
+Print["MaxBits:     ", maxBits,
+      "  (", Length[allBitStrings], " bit strings generated)"];
+Print["Mode:        ", mode];
+If[mode =!= "Symbolic", Print["NSteps:      ", nSteps]];
+Print["MaxBitDepth: ", maxBitDepth];
+Print[StringRepeat["=", 75]];
+Print[];
+
+Print[StringPadRight["Bits",    colBits],
+      StringPadRight["State",   colState],
+      StringPadRight["#States", colN],
+      If[mode =!= "Numerical", StringPadRight["Symbolic",  colSym], ""],
+      If[mode =!= "Symbolic",
+         StringPadRight["KL",       colKL] <>
+         StringPadRight["Numerical",colNum], ""]];
+Print[StringRepeat["-", 75]];
+
+(* ================================================================
+   Main loop
+   ================================================================ *)
+coveredStates = {};
+testedCount   = 0;
+symPassCount  = 0;
+symFailCount  = 0;
+numPassCount  = 0;
+numFailCount  = 0;
+
+Do[
+  (* Convert bit string to system state via user-supplied bijection *)
+  state = Check[BitsToState[bitString], $Failed];
+  If[state === $Failed || state === None, Continue[]];
+
+  (* Skip if this seed is already in a known connected component *)
+  If[MemberQ[coveredStates, state], Continue[]];
+
+  bitsStr  = StringJoin[ToString /@ bitString];
+  stateStr = ToString[state];
+
+  (* ---- BFS: discover connected component from seed ---- *)
+  treeData = BuildTreeAT[state, $alg,
+               "MaxBitDepth" -> maxBitDepth,
+               "TimeLimit"   -> 120.,
+               "Verbose"     -> verbose];
+
+  (* Algorithm contains an interceptable call -- print error and move on *)
+  If[MatchQ[treeData, $dbc$cantHandle[_]],
+    Print[StringPadRight[bitsStr,  colBits],
+          StringPadRight[stateStr, colState],
+          StringPadRight["?",      colN],
+          "ERROR: ", treeData[[1]]];
+    testedCount++;
+    Continue[]];
+
+  allStates = Sort @ Keys[treeData];
+  matrix    = TreeATToMatrix[treeData];
+  nStates   = Length[allStates];
+
+  (* Record all discovered states so later seeds in this component
+     are skipped *)
+  coveredStates = Union[coveredStates, allStates];
+  testedCount++;
+
+  (* ---- Symbolic detailed-balance check ---- *)
+  symResult = "-";
+  If[mode =!= "Numerical",
+    violations = CheckDetailedBalance[
+                   matrix, allStates, $energy, $symAssumptions];
+    symResult  = If[violations === {}, "PASS", "FAIL"];
+    If[symResult === "PASS", symPassCount++, symFailCount++]
+  ];
+
+  (* ---- Numerical MCMC check ---- *)
+  (* Skip for trivial single-state systems *)
+  klStr     = "-";
+  numResult = "-";
+  If[mode =!= "Symbolic" && nStates > 1,
+    If[$symVars =!= {},
+      (* Assign random numeric values to symbolic energy parameters *)
+      numSubs = MakeNumericSubs[$sysParams, 42];
+      numVals = Last /@ numSubs;
+      Block[Evaluate[$symVars],
+        MapThread[Set, {$symVars, numVals}];
+        mcmcCounts = RunNumericalMCMCAT[allStates, $alg, $numBeta,
+                       "NSteps" -> nSteps];
+        boltzmann  = BoltzmannWeightsAT[allStates, $energy, $numBeta]
+      ],
+      (* Fully numeric energy: proceed directly *)
+      mcmcCounts = RunNumericalMCMCAT[allStates, $alg, $numBeta,
+                     "NSteps" -> nSteps];
+      boltzmann  = BoltzmannWeightsAT[allStates, $energy, $numBeta]
+    ];
+    simFreq = N[# / Total[mcmcCounts]] & /@ mcmcCounts;
+    kl = Total @ Table[
+      With[{p = simFreq[s], q = N @ boltzmann[s]},
+        If[p > 0 && q > 0, p * Log[p / q], 0.]], {s, allStates}];
+    klStr     = ToString[NumberForm[kl, {4, 3}]];
+    numResult = If[kl < 0.02, "PASS", "FAIL"];
+    If[numResult === "PASS", numPassCount++, numFailCount++]
+  ];
+
+  (* ---- Print result row ---- *)
+  symCol = If[mode =!= "Numerical", StringPadRight[symResult, colSym], ""];
+  numCol = If[mode =!= "Symbolic",
+              StringPadRight[klStr,     colKL] <>
+              StringPadRight[numResult, colNum], ""];
+  Print[StringPadRight[bitsStr,             colBits],
+        StringPadRight[stateStr,            colState],
+        StringPadRight[ToString[nStates],   colN],
+        symCol,
+        numCol],
+
+  {bitString, allBitStrings}
 ];
 
 (* ================================================================
-   NEW MODE: single positional argument, standard names in .wl file
+   Summary
    ================================================================ *)
-If[Length[posArgs] == 1,
-
-  (* Clear standard names to avoid stale definitions from previous runs *)
-  ClearAll[Algorithm, energy, seedState, numBeta, symParams];
-
-  Print["Loading: ", algFile];
-  Get[algFile];
-
-  (* Validate required definitions *)
-  If[!ValueQ[seedState],
-    Print["ERROR: 'seedState' not defined in ", posArgs[[1]]];
-    Print["  Your .wl file must define: seedState = <a valid starting state>"];
-    Exit[1]
-  ];
-  If[!ValueQ[numBeta] || !NumericQ[numBeta],
-    Print["ERROR: 'numBeta' (numeric inverse temperature) not defined in ", posArgs[[1]]];
-    Exit[1]
-  ];
-  If[Length[DownValues[Algorithm]] == 0,
-    Print["ERROR: 'Algorithm' function not defined in ", posArgs[[1]]];
-    Exit[1]
-  ];
-  If[Length[DownValues[energy]] == 0,
-    Print["ERROR: 'energy' function not defined in ", posArgs[[1]]];
-    Exit[1]
-  ];
-
-  $seedState  = seedState;
-  $numBeta    = numBeta;
-  $alg        = Algorithm;
-  $energy     = energy;
-  $sysParams  = If[ValueQ[symParams], symParams, None];
-  $algName    = "Algorithm";
-  If[systemName == "", systemName = FileBaseName[posArgs[[1]]]];
-
-  ,
-
-(* ================================================================
-   LEGACY MODE: five positional arguments
-   ================================================================ *)
-
-  If[Length[posArgs] < 5,
-    Print["ERROR: Legacy mode requires 5 positional arguments."];
-    Print["Usage: wolframscript -file check.wls <alg_file> <seed_state> <alg_name> <energy_name> <num_beta> [options]"];
-    Exit[1]
-  ];
-
-  seedStr    = posArgs[[2]];
-  algName    = posArgs[[3]];
-  energyName = posArgs[[4]];
-  numBetaStr = posArgs[[5]];
-
-  $seedState = ToExpression[seedStr];
-  If[$seedState === $Failed,
-    Print["ERROR: Cannot parse seed state: ", seedStr]; Exit[1]
-  ];
-  $numBeta = ToExpression[numBetaStr];
-  If[!NumericQ[$numBeta],
-    Print["ERROR: num_beta must be a number, got: ", numBetaStr]; Exit[1]
-  ];
-
-  Print["Loading: ", algFile];
-  Get[algFile];
-
-  $alg    = ToExpression[algName];
-  $energy = ToExpression[energyName];
-  $sysParams = None;
-  $algName   = algName;
-  If[systemName == "", systemName = algName];
-
-  If[!MatchQ[$alg, _Symbol],
-    Print["ERROR: Algorithm '", algName, "' not found."]; Exit[1]
-  ];
-  If[!MatchQ[$energy, _Symbol],
-    Print["ERROR: Energy function '", energyName, "' not found."]; Exit[1]
-  ];
+Print[];
+Print[StringRepeat["-", 75]];
+Print["Systems tested (distinct connected components): ", testedCount];
+If[mode =!= "Numerical",
+  Print["Symbolic  -- PASS: ", symPassCount, "  FAIL: ", symFailCount]];
+If[mode =!= "Symbolic" && (numPassCount + numFailCount) > 0,
+  Print["Numerical -- PASS: ", numPassCount, "  FAIL: ", numFailCount]];
+If[symFailCount == 0 && numFailCount == 0 && testedCount > 0,
+  Print["All tested systems satisfy detailed balance."],
+  If[testedCount == 0,
+    Print["No valid states found for bit strings of length 1..", maxBits, "."],
+    Print["*** DETAILED BALANCE VIOLATION DETECTED ***"]
+  ]
 ];
-
-(* ---- Run the check ---- *)
-Print[""];
-Print[StringRepeat["=", 62]];
-Print["System:     ", systemName];
-Print["Seed state: ", $seedState];
-Print["numBeta:    ", $numBeta];
-Print["NSteps:     ", nSteps];
-Print["MaxBitDepth:", maxBitDepth];
-Print[StringRepeat["=", 62]];
-Print[""];
-
-result = RunFullCheck[
-  $seedState, $alg, $energy, $numBeta,
-  "SysParams"   -> $sysParams,
-  "SystemName"  -> systemName,
-  "NSteps"      -> nSteps,
-  "MaxBitDepth" -> maxBitDepth,
-  "Verbose"     -> verbose,
-  "OpenWindow"  -> openWindow
-];
-
-Print[""];
-Print[StringRepeat["=", 62]];
-If[KeyExistsQ[result, "error"],
-  Print["RESULT: ABORTED -- ", result["error"]],
-  Print["RESULT: ", If[result["pass"], "PASS", "FAIL"],
-        "  (KL divergence: ", result["kl"], ")"]
-];
-Print[StringRepeat["=", 62]];
+Print[StringRepeat["=", 75]];

@@ -71,4 +71,14 @@ Algorithm[state_List] :=
   ]
 
 (* ---- Checker interface ---- *)
-seedState = {1, 2, 3, 0}   (* particles 1,2,3 at sites 1,2,3; empty at 4 *)
+
+(* BitsToState: bit string -> labeled-particle state.
+   Accepts any list of length L$kswap.  Occupied sites (bit=1) receive
+   labels 1, 2, 3, ... assigned left to right; empty sites are 0.
+   Example: {1,1,1,0} -> {1,2,3,0}   {1,0,1,1} -> {1,0,2,3}
+   Returns None for bit strings of the wrong length. *)
+BitsToState[bits_List] :=
+  If[Length[bits] =!= L$kswap, None,
+    bits * Accumulate[bits]]
+
+numBeta = 1

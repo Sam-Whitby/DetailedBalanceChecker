@@ -105,5 +105,13 @@ Algorithm[occ_List] :=
   ]
 
 (* ---- Checker interface ---- *)
-seedState = {1, 5, 9}
-numBeta   = 1
+
+(* BitsToState: bit string -> sorted-occupancy state.
+   Accepts exactly ($Lx2f * $Ly2f)-bit strings with exactly 3 occupied sites.
+   Example: {1,0,0,0,1,0,0,0,1} -> {1,5,9}
+   Returns None for any other length or particle count. *)
+BitsToState[bits_List] :=
+  If[Length[bits] =!= $Lx2f * $Ly2f || Total[bits] =!= 3, None,
+    Flatten[Position[bits, 1]]]
+
+numBeta = 1

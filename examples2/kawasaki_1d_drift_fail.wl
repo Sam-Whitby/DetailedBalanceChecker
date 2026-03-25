@@ -52,5 +52,14 @@ Algorithm[{p1_Integer, p2_Integer, p3_Integer}] :=
   ]
 
 (* ---- Checker interface ---- *)
-seedState = {1, 2, 3}
-numBeta   = 1
+
+(* BitsToState: bit string -> sorted-occupancy state.
+   Accepts exactly L$df-bit strings with exactly 3 occupied sites.
+   The bit at position i is 1 if site i is occupied.
+   Example: {1,1,1,0} -> {1,2,3}   {0,1,1,1} -> {2,3,4}
+   Returns None for any other length or particle count. *)
+BitsToState[bits_List] :=
+  If[Length[bits] =!= L$df || Total[bits] =!= 3, None,
+    Flatten[Position[bits, 1]]]
+
+numBeta = 1

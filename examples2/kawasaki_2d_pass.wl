@@ -81,8 +81,17 @@ Algorithm[occ_List] :=
   ]
 
 (* ---- Checker interface ---- *)
-seedState = {1, 5, 9}
-numBeta   = 1
+
+(* BitsToState: bit string -> sorted-occupancy state.
+   Accepts exactly ($Lx * $Ly)-bit strings with exactly 3 occupied sites.
+   The bit at position i is 1 if site i is occupied (row-major, 1-indexed).
+   Example: {1,0,0,0,1,0,0,0,1} -> {1,5,9}
+   Returns None for any other length or particle count. *)
+BitsToState[bits_List] :=
+  If[Length[bits] =!= $Lx * $Ly || Total[bits] =!= 3, None,
+    Flatten[Position[bits, 1]]]
+
+numBeta = 1
 
 (* ================================================================
    PlotState: visualise a state as an ASCII grid (for use in a
