@@ -65,6 +65,7 @@ def main():
     delay_ms  = int(d.get("delay_ms", 100))
     algo_name = d.get("algo_file", "")
     n_frames  = len(steps)
+    params    = d.get("params", {})
 
     cmap  = make_colormap(n_types)
     vmin  = -0.5
@@ -76,8 +77,17 @@ def main():
     fig, (ax_grid, ax_energy) = plt.subplots(
         1, 2, figsize=(12, max(4, n_rows + 1)),
         gridspec_kw={"width_ratios": [1, 1.6]})
-    fig.suptitle(algo_name, fontsize=9, y=0.98, style="italic")
     fig.patch.set_facecolor("#f5f5f5")
+
+    # Title: algorithm file; subtitle: parameter values
+    fig.suptitle(algo_name, fontsize=9, y=0.99, style="italic")
+    if params:
+        param_str = "   ".join(
+            f"β={v:.3f}" if k == "beta" else f"{k}={v:.3f}"
+            for k, v in params.items())
+        fig.text(0.5, 0.955, param_str,
+                 ha="center", va="top", fontsize=8, color="#444444",
+                 fontfamily="monospace")
 
     # ---- Lattice panel ------------------------------------------------ #
     grid0 = np.array(states[0], dtype=float).reshape(n_rows, n_cols)
@@ -159,7 +169,7 @@ def main():
         fig, update, frames=n_frames,
         interval=delay_ms, blit=False, repeat=False)
 
-    plt.tight_layout(rect=[0, 0, 1, 0.96])
+    plt.tight_layout(rect=[0, 0, 1, 0.93])
     plt.show()
 
 

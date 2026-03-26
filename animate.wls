@@ -117,10 +117,14 @@ jSupplied = Association @ Map[
                  StringMatchQ[#, "J" ~~ DigitCharacter ~~ "=" ~~ __] &]];
 
 types = Sort[DeleteCases[initialState, 0]];
+(* Random J values drawn from N(0,1) so bonds can be attractive or repulsive *)
 SeedRandom[42];
+jAssigned = <||>;
 Do[If[a < b,
   sym = ToExpression["J" <> ToString[a] <> ToString[b]];
-  Set[Evaluate[sym], Lookup[jSupplied, sym, RandomReal[{0.5, 1.5}]]]],
+  val = Lookup[jSupplied, sym, RandomVariate[NormalDistribution[0, 1]]];
+  Set[Evaluate[sym], val];
+  AssociateTo[jAssigned, ToString[sym] -> val]],
   {a, types}, {b, types}];
 
 (* ---- Run algorithm and collect data ---- *)
@@ -150,7 +154,8 @@ Export[dataFile,
     "delay_ms"   -> Round[delay * 1000],
     "steps"      -> stepsRec,
     "states"     -> statesRec,
-    "energies"   -> energiesRec|>];
+    "energies"   -> energiesRec,
+    "params"     -> Join[<|"beta" -> $animBeta|>, jAssigned]|>];
 
 (* ---- Launch Python animation ---- *)
 pyScript = FileNameJoin[{scriptDir, "animate_plot.py"}];
