@@ -17,6 +17,11 @@ GREEN = '#1a7a1a'
 RED   = '#8b0000'
 BLUE  = '#3a6bb5'
 
+# Panels are skipped above these state-count thresholds to prevent
+# matplotlib producing images that exceed the 2^16 pixel-per-axis limit.
+MAX_TREE_STATES   = 24   # individual decision-tree panel
+MAX_MATRIX_STATES = 50   # full symbolic transition-matrix panel
+
 # ── main ─────────────────────────────────────────────────────────────────────
 
 def main():
@@ -42,16 +47,19 @@ def main():
     code_lines = alg_code.rstrip('\n').split('\n')
     n_code     = len(code_lines)
 
+    show_trees  = n <= MAX_TREE_STATES
+    show_matrix = n <= MAX_MATRIX_STATES
+
     # ── Figure sizing ─────────────────────────────────────────────────────────
     # Each code line at fontsize 8 needs ~0.155 in (including line spacing)
-    BANNER_H = 0.55          # inches reserved for banner text at top
-    TOP_H    = 4.0           # row 0: scatter + DB table
-    TREE_H   = 7.0           # row 1: decision trees (generous height)
-    MAT_H    = 2.8           # row 2: transition matrix (full width)
+    BANNER_H = 0.55
+    TOP_H    = 4.0
+    TREE_H   = 7.0  if show_trees  else 0.8   # collapsed placeholder when skipped
+    MAT_H    = 2.8  if show_matrix else 0.8
     CODE_H   = max(3.5, n_code * 0.155 + 0.9)
     FIG_H    = TOP_H + TREE_H + MAT_H + CODE_H + BANNER_H
 
-    FIG_W    = 20.0          # wider to give matrix cells more room
+    FIG_W    = 20.0
 
     fig = plt.figure(figsize=(FIG_W, FIG_H))
     fig.patch.set_facecolor('#f4f6f9')
@@ -59,43 +67,83 @@ def main():
     # ── Banner ────────────────────────────────────────────────────────────────
     banner_col = GREEN if passed else RED
     verdict    = '✓  DETAILED BALANCE:  PASS' if passed else '✗  DETAILED BALANCE:  FAIL'
-    banner_y   = 1.0 - (BANNER_H / 2) / FIG_H   # centred in banner strip
+    banner_y   = 1.0 - (BANNER_H / 2) / FIG_H
     fig.text(0.5, banner_y,
              f'{name}     {verdict}',
              ha='center', va='center', fontsize=14, fontweight='bold', color='white',
              bbox=dict(boxstyle='round,pad=0.45', facecolor=banner_col, alpha=1.0))
 
     # ── GridSpec ──────────────────────────────────────────────────────────────
-    top_frac   = 1.0 - BANNER_H / FIG_H - 0.005  # leave room for banner
+    top_frac = 1.0 - BANNER_H / FIG_H - 0.005
     gs = gridspec.GridSpec(
         4, 3, figure=fig,
         height_ratios=[TOP_H, TREE_H, MAT_H, CODE_H],
         hspace=0.38, wspace=0.28,
         top=top_frac, bottom=0.008, left=0.04, right=0.97)
 
-    ax_sc   = fig.add_subplot(gs[0, :2])   # scatter — 2/3 width
-    ax_db   = fig.add_subplot(gs[0, 2])    # DB table — 1/3 width
-    # Trees: nested sub-gridspec so any number of states fits in the row
-    n_trees  = n
-    gs_trees = gridspec.GridSpecFromSubplotSpec(
-        1, n_trees, subplot_spec=gs[1, :], wspace=0.25)
-    ax_tr   = [fig.add_subplot(gs_trees[0, i]) for i in range(n_trees)]
-    ax_mat  = fig.add_subplot(gs[2, :])    # matrix — full width
-    ax_code = fig.add_subplot(gs[3, :])    # code   — full width
+    ax_sc   = fig.add_subplot(gs[0, :2])
+    ax_db   = fig.add_subplot(gs[0, 2])
+    ax_mat  = fig.add_subplot(gs[2, :])
+    ax_code = fig.add_subplot(gs[3, :])
 
-    # ── Draw panels ───────────────────────────────────────────────────────────
+    # ── Tree row ──────────────────────────────────────────────────────────────
+    if show_trees:
+        gs_trees = gridspec.GridSpecFromSubplotSpec(
+            1, n, subplot_spec=gs[1, :], wspace=0.25)
+        ax_tr = [fig.add_subplot(gs_trees[0, i]) for i in range(n)]
+        for i in range(n):
+            draw_tree(ax_tr[i], states[i],
+                      tree_raw[i] if i < len(tree_raw) else [], states)
+    else:
+        ax_skip = fig.add_subplot(gs[1, :])
+        ax_skip.axis('off')
+        ax_skip.text(0.5, 0.5,
+                     f'Decision-tree panel omitted — {n} states exceeds display threshold '
+                     f'({MAX_TREE_STATES}).\nAll states: ' +
+                     ', '.join(str(s) for s in states[:40]) +
+                     (f' … (+{n-40} more)' if n > 40 else ''),
+                     ha='center', va='center', transform=ax_skip.transAxes,
+                     fontsize=10, color='#555', wrap=True,
+                     bbox=dict(boxstyle='round,pad=0.5', facecolor='#f0f0f0',
+                               edgecolor='#aaa', lw=0.8))
+
+    # ── Draw remaining panels ─────────────────────────────────────────────────
     draw_scatter(ax_sc, states, sim_freq, boltzmann, kl)
     draw_db_table(ax_db, db_pairs)
-    for i in range(n):
-        draw_tree(ax_tr[i], states[i],
-                  tree_raw[i] if i < len(tree_raw) else [], states)
-    draw_matrix(ax_mat, states, mat_raw)
+    if show_matrix:
+        draw_matrix(ax_mat, states, mat_raw)
+    else:
+        ax_mat.axis('off')
+        ax_mat.text(0.5, 0.5,
+                    f'Transition-matrix panel omitted — {n} states exceeds display threshold '
+                    f'({MAX_MATRIX_STATES}).',
+                    ha='center', va='center', transform=ax_mat.transAxes,
+                    fontsize=10, color='#555',
+                    bbox=dict(boxstyle='round,pad=0.5', facecolor='#f0f0f0',
+                              edgecolor='#aaa', lw=0.8))
     draw_code_panel(ax_code, alg_code)
 
-    # ── Save ─────────────────────────────────────────────────────────────────
+    # ── Save (with fallback if image exceeds matplotlib's pixel limit) ────────
     out_path = sys.argv[1].replace('.json', '.png')
-    fig.savefig(out_path, dpi=250, bbox_inches='tight',
-                facecolor=fig.get_facecolor())
+    try:
+        fig.savefig(out_path, dpi=250, bbox_inches='tight',
+                    facecolor=fig.get_facecolor())
+    except (ValueError, OverflowError) as exc:
+        # Image still too large even after panel suppression — fall back to
+        # a compact summary-only figure (scatter + DB table + code).
+        print(f'  Warning: full figure too large ({exc}); saving compact summary.',
+              file=sys.stderr)
+        plt.close(fig)
+        fig2, axes2 = plt.subplots(1, 2, figsize=(FIG_W, TOP_H + BANNER_H + 0.5))
+        fig2.patch.set_facecolor('#f4f6f9')
+        fig2.text(0.5, 0.97, f'{name}     {verdict}',
+                  ha='center', va='top', fontsize=13, fontweight='bold', color='white',
+                  bbox=dict(boxstyle='round,pad=0.4', facecolor=banner_col, alpha=1.0))
+        draw_scatter(axes2[0], states, sim_freq, boltzmann, kl)
+        draw_db_table(axes2[1], db_pairs)
+        fig2.tight_layout(rect=[0, 0, 1, 0.94])
+        fig2.savefig(out_path, dpi=150, bbox_inches='tight',
+                     facecolor=fig2.get_facecolor())
     print(out_path)
 
 

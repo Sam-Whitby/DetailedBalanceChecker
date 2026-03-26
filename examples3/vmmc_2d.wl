@@ -131,13 +131,17 @@ DynamicSymParams[states_List] :=
 
 (* ---- Energy (identical to kawasaki_2d.wl) -------------------------------- *)
 
-(* Sum J_ab over all horizontal and vertical bonds of the L×L torus *)
+(* Sum J_ab over all horizontal and vertical bonds of the L×L torus.
+   On the L=2 torus, right(s)=left(s) and down(s)=up(s) for every site, so
+   the naive sum counts each undirected bond twice.  The /If[L==2,2,1] factor
+   corrects this.  For L≥3 each directed right/down bond visits every
+   undirected edge exactly once, so the divisor is 1. *)
 energy[state_List] :=
   With[{L = Round[Sqrt[Length[state]]]},
     Total[Table[
       $pairJ[state[[s]], state[[$right2D[s, L]]]] +
       $pairJ[state[[s]], state[[$down2D[s, L]]]],
-      {s, Length[state]}]]]
+      {s, Length[state]}]] / If[L == 2, 2, 1]]
 
 
 (* ---- VMMC helpers -------------------------------------------------------- *)
@@ -213,31 +217,46 @@ $vmmcBuildCluster[state_, L_, seed_, dir_] :=
           eInit = $virtualPairEnergy[pType, qType, p,     q, L];  (* current bond *)
           eFwd  = $virtualPairEnergy[pType, qType, pPost, q, L]; (* fwd virtual  *)
           eRev  = $virtualPairEnergy[pType, qType, pRev,  q, L]; (* rev virtual  *)
-          (* Link weights as Piecewise (not Max) so the symbolic checker's
-             FullSimplify can resolve each sign-case of J independently.
-             Max[1-Exp[x],0] is equivalent but opaque to FullSimplify for
-             unknown-sign symbolic x; Piecewise exposes the case structure. *)
-          wFwd = Piecewise[{{1 - Exp[\[Beta] (eInit - eFwd)], eInit < eFwd}}, 0];
-          wRev = Piecewise[{{1 - Exp[\[Beta] (eInit - eRev)], eInit < eRev}}, 0];
+          (* Link weights as Piecewise (not Max) so FullSimplify can resolve
+             sign-cases of J independently.  An explicit {1, e===Infinity} guard
+             is prepended to each weight: when the virtual position coincides with
+             an occupied site, $virtualPairEnergy returns Infinity, and without
+             this guard Mathematica would attempt Exp[β(finite-Infinity)] with
+             symbolic β, producing a ComplexInfinity warning.  The guard short-
+             circuits to wFwd=1 (mandatory link attempt) without evaluating the
+             problematic exponent. *)
+          wFwd = Piecewise[{
+              {1,                               eFwd === Infinity},
+              {1 - Exp[\[Beta] (eInit - eFwd)], eInit < eFwd}},
+            0];
+          wRev = Piecewise[{
+              {1,                               eRev === Infinity},
+              {1 - Exp[\[Beta] (eInit - eRev)], eInit < eRev}},
+            0];
           r1 = RandomReal[];
           If[r1 <= wFwd,
             (* A link is attempted; determine whether it is frustrated.
-               The ratio wRev/wFwd is expressed as a Piecewise for two reasons:
-               (1) Avoids 0/0 (Indeterminate) when wFwd = 0: the Piecewise
-                   else-branch returns 0 instead of dividing.  Without this,
-                   the symbolic checker's acceptTest receives Indeterminate,
-                   which corrupts path weights even for zero-probability paths.
-               (2) Min[..., 1] clamps to [0,1]: if wRev > wFwd (e.g. the
-                   reverse virtual move collides with a hard sphere while the
-                   forward does not), the raw ratio exceeds 1 and acceptTest
-                   would assign negative weight to the frustration branch.
-                   Clamping gives ratio = 1, making r2 > 1 impossible, so
-                   the particle is always recruited — the correct behaviour. *)
+               The ratio wRev/wFwd is a Piecewise that:
+               (1) Handles Infinity cases explicitly to avoid Exp[β×(-Infinity)]
+                   with symbolic β (ComplexInfinity → Power::infy warning).
+               (2) Avoids 0/0 (Indeterminate) when wFwd=0 (else-branch = 0).
+               (3) Min[...,1] clamps to [0,1]: if wRev>wFwd the raw ratio
+                   exceeds 1 and would give negative frustration probability;
+                   clamping to 1 makes r2>1 impossible → particle always recruited.
+               Physics of Infinity cases:
+               • eFwd=∞ && eRev=∞: both virtual sites collide → always recruit
+               • eFwd=∞, eInit<eRev: forward collision only → recruit with prob wRev
+               • eFwd=∞ otherwise: forward collision, wRev=0 → always frustrated
+               • eRev=∞, eInit<eFwd: reverse collision only → always recruit      *)
             r2 = RandomReal[];
             If[r2 > Piecewise[{
+                  {1,                               eFwd === Infinity && eRev === Infinity},
+                  {1 - Exp[\[Beta] (eInit - eRev)], eFwd === Infinity && eInit < eRev},
+                  {0,                               eFwd === Infinity},
+                  {1,                               eRev === Infinity && eInit < eFwd},
                   {Min[(1 - Exp[\[Beta] (eInit - eRev)]) / (1 - Exp[\[Beta] (eInit - eFwd)]), 1],
                    eInit < eFwd && eInit < eRev},
-                  {0, eInit < eFwd}},
+                  {0,                               eInit < eFwd}},
                 0],
               (* Frustrated: forward link forms but reverse does not → reject *)
               frustrated = True; Break[],
