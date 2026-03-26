@@ -32,9 +32,15 @@ wolframscript -file check.wls examples3/kawasaki_1d.wl MaxBitString=1111111
 # 2D Kawasaki (L=1 and L=2 tori), symbolic only (faster)
 wolframscript -file check.wls examples3/kawasaki_2d.wl MaxBitString=1111111 Mode=Symbolic
 
-# Failure examples
+# Kawasaki failure examples (wrong-sign dE)
 wolframscript -file check.wls examples3/kawasaki_1d_fail.wl MaxBitString=1111111
 wolframscript -file check.wls examples3/kawasaki_2d_fail.wl MaxBitString=1111111 Mode=Symbolic
+
+# 1D rightward cluster move (FAILS -- no reverse move)
+wolframscript -file check.wls examples3/cluster_1d_fail.wl MaxBitString=1111111 Mode=Symbolic
+
+# 2D rigid cluster move (FAILS -- cluster merging breaks proposal symmetry)
+wolframscript -file check.wls examples3/cluster_2d.wl MaxBitString=1111111 Mode=Symbolic
 ```
 
 **Options** (`key=value`, no spaces around `=`):
@@ -59,28 +65,49 @@ For the Kawasaki examples, the bijective encoding maps 7-bit strings to all L=1,
 
 ## Animating an algorithm
 
+Requires Python 3 with `matplotlib` and `numpy`.
+
 ```bash
+# 1D Kawasaki ring (6 sites, 3 particles)
 wolframscript -file animate.wls examples3/kawasaki_1d.wl \
-  Sites=6 N=3 Steps=300 Beta=1 Delay=0.15
+  Sites=6 N=3 Steps=500 Delay=0.05
 
+# 2D Kawasaki torus (3x3 = 9 sites, 4 particles)
 wolframscript -file animate.wls examples3/kawasaki_2d.wl \
-  Sites=9 N=4 Steps=200 Delay=0.2
+  Sites=9 N=4 Steps=300 Delay=0.1 J12=1.5
 
-# Supply specific coupling constants
+# 1D cluster move (also works for fail examples)
+wolframscript -file animate.wls examples3/cluster_1d_fail.wl \
+  Sites=8 N=4 Steps=400 Delay=0.08
+
+# 2D cluster move
+wolframscript -file animate.wls examples3/cluster_2d.wl \
+  Sites=9 N=3 Steps=400 Delay=0.08
+
+# Specify coupling constants explicitly
 wolframscript -file animate.wls examples3/kawasaki_1d.wl \
   Sites=6 N=3 J12=1.0 J13=0.5 J23=2.0
+
+# Record every 5th step for long runs
+wolframscript -file animate.wls examples3/kawasaki_2d.wl \
+  Sites=9 N=4 Steps=2000 RecordEvery=5 Delay=0.05
 ```
+
+The animation opens in a separate matplotlib window with:
+- **Left panel**: colour-coded imshow of the lattice (dark = empty, each particle type has a distinct colour). For 2D algorithms the grid is shown as L×L; for 1D as a single row.
+- **Right panel**: system energy plotted against step number, growing in real time.
 
 **Options:**
 
 | Option | Default | Description |
 |---|---|---|
-| `Sites=<n>` | required | Total lattice sites (e.g. 9 for a 3x3 grid) |
+| `Sites=<n>` | required | Total lattice sites (e.g. 9 for a 3×3 grid) |
 | `N=<n>` | required | Number of labeled particles (types 1..N) |
-| `Steps=<n>` | `200` | Number of MCMC steps to animate |
+| `Steps=<n>` | `200` | MCMC steps to run |
 | `Beta=<f>` | from `.wl` file | Inverse temperature |
-| `Delay=<f>` | `0.1` | Seconds per frame |
-| `J<a><b>=<f>` | random | Set coupling constant between types a and b |
+| `Delay=<f>` | `0.1` | Seconds per animation frame |
+| `RecordEvery=<n>` | `1` | Record state every nth step |
+| `J<a><b>=<f>` | random | Set coupling constant (random otherwise) |
 
 ---
 
@@ -170,19 +197,37 @@ DisplayState[state_List] :=
 |---|---|---|
 | `examples3/kawasaki_1d.wl` | 1D ring, labeled particles, dynamic L | **PASS** |
 | `examples3/kawasaki_2d.wl` | 2D torus, labeled particles, dynamic L | **PASS** |
-| `examples3/kawasaki_1d_fail.wl` | Same as 1D but bond 0 proposed twice as often | **FAIL** |
-| `examples3/kawasaki_2d_fail.wl` | Same as 2D but bond 0 proposed twice as often | **FAIL** |
+| `examples3/kawasaki_1d_fail.wl` | 1D Kawasaki, wrong-sign dE | **FAIL** |
+| `examples3/kawasaki_2d_fail.wl` | 2D Kawasaki, wrong-sign dE | **FAIL** |
+| `examples3/cluster_1d_fail.wl` | 1D rightward cluster slide | **FAIL** |
+| `examples3/cluster_2d.wl` | 2D rigid cluster move | **FAIL** |
 
-The failure examples differ from the correct ones by exactly one line:
+### Kawasaki failure: wrong-sign dE
 
 ```mathematica
 (* Correct *)    dE = energy[newState] - energy[state]
 (* Buggy   *)    dE = energy[state] - energy[newState]   (* sign reversed *)
 ```
 
-With the wrong sign, `MetropolisProb` receives `-ΔE`: uphill moves (to higher energy) are always accepted, while downhill moves are penalised with `exp(-β|ΔE|)`. The algorithm preferentially visits high-energy states, inverting the Boltzmann distribution. For any pair of states (i, j) with E(i) ≠ E(j), T(i→j)·π(i) ≠ T(j→i)·π(j).
+With the wrong sign, `MetropolisProb` receives `-ΔE`: uphill moves are always accepted, downhill moves are penalised. The algorithm preferentially visits high-energy states, inverting the Boltzmann distribution.
 
-**Note on bond-selection bias.** An asymmetric bond proposal — e.g. `Mod[RandomInteger[{0,L}],L]`, which makes bond 0 twice as likely — does *not* break detailed balance for Kawasaki. Both the forward transition i→j and the reverse transition j→i go through the same bond b and therefore have the same proposal probability, which cancels in the DB condition. Only the acceptance step matters.
+**Note on bond-selection bias.** An asymmetric bond proposal — e.g. `Mod[RandomInteger[{0,L}],L]` making bond 0 twice as likely — does *not* break detailed balance for Kawasaki. Both forward and reverse transitions of the same bond have the same proposal probability, which cancels in the DB condition. Only the acceptance step matters.
+
+### 1D rightward cluster slide
+
+Finds all maximal connected runs of particles and slides one randomly chosen run one step clockwise if the site to its right is empty. The reverse (leftward) move is never proposed, so T(j→i) = 0 wherever T(i→j) > 0. The symbolic checker detects this immediately for any component containing a rightward-possible transition.
+
+### 2D rigid cluster move
+
+Picks a connected cluster at random and attempts to translate it one step N/E/S/W if all target sites are empty. This fails because **cluster merging changes the number of available clusters** between the two states:
+
+- State i has n clusters → picks cluster C with probability 1/n
+- Cluster C moves east, merging with cluster D → state j has n-1 clusters
+- Reverse: state j picks the merged cluster CD with probability 1/(n-1)
+
+So T(i→j) ∝ 1/n but T(j→i) ∝ 1/(n-1), and the ratio 1/n ≠ 1/(n-1) cannot be compensated by the Metropolis acceptance alone. The checker detects this on the 2×2 torus (tested by `MaxBitString=1111111`) where merging transitions exist.
+
+A correct cluster-move algorithm would use a Rosenbluth-weight acceptance criterion that explicitly accounts for the number of cluster choices in the forward and reverse states.
 
 ---
 
@@ -215,14 +260,17 @@ For a **discretised molecular dynamics** integrator (where, say, one lattice dim
 
 ```
 check.wls               Checker entry point
-animate.wls             Terminal animation of algorithm execution
+animate.wls             Animation runner (collects data, calls Python)
+animate_plot.py         Python/matplotlib animation display
 template.wl             Template for writing an algorithm file
 dbc_core.wl             Core library (BFS, symbolic check, MCMC check)
 examples3/
-  kawasaki_1d.wl        1D Kawasaki, dynamic L, labeled particles   [PASS]
-  kawasaki_2d.wl        2D Kawasaki, dynamic L, labeled particles   [PASS]
-  kawasaki_1d_fail.wl   Same with bond-0 bias                       [FAIL]
-  kawasaki_2d_fail.wl   Same with bond-0 bias                       [FAIL]
+  kawasaki_1d.wl        1D Kawasaki, dynamic L, labeled particles        [PASS]
+  kawasaki_2d.wl        2D Kawasaki, dynamic L, labeled particles        [PASS]
+  kawasaki_1d_fail.wl   1D Kawasaki, wrong-sign dE                       [FAIL]
+  kawasaki_2d_fail.wl   2D Kawasaki, wrong-sign dE                       [FAIL]
+  cluster_1d_fail.wl    1D rightward cluster slide (no reverse)          [FAIL]
+  cluster_2d.wl         2D rigid cluster move (merging breaks symmetry)  [FAIL]
 legacy/
   examples/             Old example format (unsupported)
   examples2/            Fixed-L examples (superseded by examples3/)
