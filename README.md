@@ -70,19 +70,23 @@ Requires Python 3 with `matplotlib` and `numpy`.
 ```bash
 # 1D Kawasaki ring (6 sites, 3 particles)
 wolframscript -file animate.wls examples3/kawasaki_1d.wl \
-  Sites=6 N=3 Steps=500 Delay=0.05
+  Sites=6 N=3 Steps=500 FPS=20
 
 # 2D Kawasaki torus (3x3 = 9 sites, 4 particles)
 wolframscript -file animate.wls examples3/kawasaki_2d.wl \
-  Sites=9 N=4 Steps=300 Delay=0.1 J12=1.5
+  Sites=9 N=4 Steps=300 FPS=10 J12=1.5
+
+# 2D VMMC (large system, fast 2-colour mode)
+wolframscript -file animate.wls examples3/vmmc_2d.wl \
+  Sites=100 N=40 Steps=5000 FPS=30 Simple=1
 
 # 1D cluster move (also works for fail examples)
 wolframscript -file animate.wls examples3/cluster_1d_fail.wl \
-  Sites=8 N=4 Steps=400 Delay=0.08
+  Sites=8 N=4 Steps=400 FPS=15
 
 # 2D cluster move
 wolframscript -file animate.wls examples3/cluster_2d.wl \
-  Sites=9 N=3 Steps=400 Delay=0.08
+  Sites=9 N=3 Steps=400 FPS=15
 
 # Specify coupling constants explicitly
 wolframscript -file animate.wls examples3/kawasaki_1d.wl \
@@ -90,12 +94,14 @@ wolframscript -file animate.wls examples3/kawasaki_1d.wl \
 
 # Record every 5th step for long runs
 wolframscript -file animate.wls examples3/kawasaki_2d.wl \
-  Sites=9 N=4 Steps=2000 RecordEvery=5 Delay=0.05
+  Sites=9 N=4 Steps=2000 RecordEvery=5 FPS=20
 ```
 
 The animation opens in a separate matplotlib window with:
 - **Left panel**: colour-coded imshow of the lattice (dark = empty, each particle type has a distinct colour). For 2D algorithms the grid is shown as L×L; for 1D as a single row.
 - **Right panel**: system energy plotted against step number, growing in real time.
+
+**Fast rendering with `Simple=1`.** By default each particle type gets its own colour, which requires a full figure redraw per frame and limits the achievable frame rate. Passing `Simple=1` switches to a two-colour mode — light grey for empty sites, blue for any occupied site — and enables matplotlib's blitting path (`blit=True`), so only the lattice image is redrawn each frame. Use this when you want high frame rates on large lattices, e.g. `FPS=30 Simple=1` for real-time VMMC visualisation.
 
 **Options:**
 
@@ -105,7 +111,8 @@ The animation opens in a separate matplotlib window with:
 | `N=<n>` | required | Number of labeled particles (types 1..N) |
 | `Steps=<n>` | `200` | MCMC steps to run |
 | `Beta=<f>` | from `.wl` file | Inverse temperature |
-| `Delay=<f>` | `0.1` | Seconds per animation frame |
+| `FPS=<f>` | `10` | Animation frame rate in frames per second |
+| `Simple=1` | off | Fast 2-colour mode: holes vs particles (enables blitting) |
 | `RecordEvery=<n>` | `1` | Record state every nth step |
 | `J<a><b>=<f>` | random | Set coupling constant (random otherwise) |
 
@@ -197,6 +204,7 @@ DisplayState[state_List] :=
 |---|---|---|
 | `examples3/kawasaki_1d.wl` | 1D ring, labeled particles, dynamic L | **PASS** |
 | `examples3/kawasaki_2d.wl` | 2D torus, labeled particles, dynamic L | **PASS** |
+| `examples3/vmmc_2d.wl` | 2D VMMC, Whitelam–Geissler cluster moves | **PASS** |
 | `examples3/kawasaki_1d_fail.wl` | 1D Kawasaki, wrong-sign dE | **FAIL** |
 | `examples3/kawasaki_2d_fail.wl` | 2D Kawasaki, wrong-sign dE | **FAIL** |
 | `examples3/cluster_1d_fail.wl` | 1D rightward cluster slide | **FAIL** |
@@ -228,6 +236,49 @@ Picks a connected cluster at random and attempts to translate it one step N/E/S/
 So T(i→j) ∝ 1/n but T(j→i) ∝ 1/(n-1), and the ratio 1/n ≠ 1/(n-1) cannot be compensated by the Metropolis acceptance alone. The checker detects this on the 2×2 torus (tested by `MaxBitString=1111111`) where merging transitions exist.
 
 A correct cluster-move algorithm would use a Rosenbluth-weight acceptance criterion that explicitly accounts for the number of cluster choices in the forward and reverse states.
+
+### 2D Virtual Move Monte Carlo (VMMC)
+
+`examples3/vmmc_2d.wl` implements the Whitelam–Geissler VMMC algorithm on a periodic square lattice with nearest-neighbour J couplings (Whitelam & Geissler, *J. Chem. Phys.* 127, 154101, 2007).
+
+**Algorithm summary.** Each step:
+1. A random occupied site is chosen as the cluster seed, and a random lattice direction d ∈ {right, left, down, up} is proposed.
+2. A cluster is grown by BFS. For each occupied non-cluster neighbour q of cluster particle p, forward and reverse link weights are computed:
+
+   ```
+   wFwd = max(1 − exp(eInit − eFwd), 0)
+   wRev = max(1 − exp(eInit − eRev), 0)
+   ```
+
+   where `eInit` is the current pair energy, `eFwd` is the pair energy if p makes the forward move, and `eRev` is the pair energy if p makes the reverse move. A random number r1 is drawn: if r1 > wFwd the neighbour is skipped; otherwise a second draw r2 determines whether the link is *frustrated* (r2 > wRev/wFwd, reject the whole move) or genuine (q joins the cluster).
+
+3. If no frustrated link was found, all cluster particles translate rigidly by one lattice step in direction d.
+
+**Why no Metropolis gate.** The Whitelam–Geissler link probabilities enforce *superdetailed balance* directly: the cluster-growth mechanism already produces the correct acceptance ratio between forward and reverse moves. Applying an additional Metropolis accept/reject step based on the total energy change would double-count bond contributions and break detailed balance. `MetropolisProb[dE]` is called in the algorithm for interface compliance with the checker, but its return value is not used as an acceptance gate.
+
+**Hard-sphere exclusion.** Same-site occupancy is treated as infinite repulsive energy (wFwd = 1, mandatory link attempt). On small lattices (L = 2), the same site can appear as its own neighbour in both the right and left (or up and down) directions; `DeleteDuplicates` is applied to the neighbour list to prevent the link probability from being applied twice to the same pair.
+
+**Checking VMMC:**
+
+```bash
+# Symbolic check on small systems
+wolframscript -file check.wls examples3/vmmc_2d.wl MaxBitString=1111111 Mode=Symbolic
+
+# Both symbolic and numerical
+wolframscript -file check.wls examples3/vmmc_2d.wl MaxBitString=1111111
+```
+
+**Animating VMMC** (use `Simple=1` for fast rendering at high frame rates):
+
+```bash
+# 10×10 lattice, 40 particles, 1000 steps at 30 fps
+wolframscript -file animate.wls examples3/vmmc_2d.wl \
+  Sites=100 N=40 Steps=1000 FPS=30 Simple=1
+
+# With attractive coupling between particle types 1 and 2
+wolframscript -file animate.wls examples3/vmmc_2d.wl \
+  Sites=100 N=40 Steps=2000 FPS=30 Simple=1 J12=-1.5
+```
 
 ---
 
@@ -267,6 +318,7 @@ dbc_core.wl             Core library (BFS, symbolic check, MCMC check)
 examples3/
   kawasaki_1d.wl        1D Kawasaki, dynamic L, labeled particles        [PASS]
   kawasaki_2d.wl        2D Kawasaki, dynamic L, labeled particles        [PASS]
+  vmmc_2d.wl            2D VMMC, Whitelam–Geissler cluster moves          [PASS]
   kawasaki_1d_fail.wl   1D Kawasaki, wrong-sign dE                       [FAIL]
   kawasaki_2d_fail.wl   2D Kawasaki, wrong-sign dE                       [FAIL]
   cluster_1d_fail.wl    1D rightward cluster slide (no reverse)          [FAIL]
