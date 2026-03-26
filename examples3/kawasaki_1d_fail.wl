@@ -1,19 +1,28 @@
 (* ================================================================
-   1D Kawasaki with rightward bond bias -- FAILS detailed balance
+   1D Kawasaki with wrong-sign acceptance -- FAILS detailed balance
    ================================================================
 
    Identical to kawasaki_1d.wl except for one line in Algorithm:
 
-     CORRECT:  b = RandomInteger[{0, L - 1}]
-     BUGGY:    b = Mod[RandomInteger[{0, L}], L]
+     CORRECT:  dE = energy[newState] - energy[state]
+     BUGGY:    dE = energy[state] - energy[newState]
 
-   The buggy version draws from {0,...,L} (L+1 values) and wraps the
-   extra value L back to bond 0, so bond 0 is proposed with probability
-   2/(L+1) while bonds 1,...,L-1 each have probability 1/(L+1).
+   With the wrong sign, MetropolisProb receives -ΔE instead of ΔE:
+   uphill moves (to higher energy) are always accepted (prob 1), while
+   downhill moves are penalised with exp(-β*|ΔE|). This inverts the
+   Boltzmann distribution: the algorithm preferentially visits
+   high-energy states rather than low-energy ones.
 
-   This asymmetry breaks detailed balance: transitions involving bond 0
-   have unequal forward and reverse proposal rates. The symbolic check
-   detects this as a persistent current between sites 1 and 2.
+   For any two states with different energies E(i) ≠ E(j):
+     T(i→j)·π(i) = P · exp(-β·E(i))   [always accepts uphill i→j]
+     T(j→i)·π(j) = P · exp(-β·ΔE) · exp(-β·E(j)) = P · exp(-2β·E(j))
+   These are equal only if E(i) = E(j), so detailed balance is violated
+   for all state pairs with different energies.
+
+   Note: a biased bond-selection probability (e.g. proposing bond 0
+   more often) does NOT break detailed balance for Kawasaki, because
+   the forward and reverse transitions of the same bond always use the
+   same proposal probability, which cancels in the DB condition.
    ================================================================ *)
 
 
@@ -69,15 +78,15 @@ energy[state_List] :=
     Total[Table[$pairJ[state[[i]], state[[Mod[i, L] + 1]]], {i, L}]]]
 
 
-(* ---- Buggy algorithm: bond 0 proposed twice as often -------------------- *)
+(* ---- Buggy algorithm: dE computed with wrong sign ----------------------- *)
 
 Algorithm[state_List] :=
   Module[{L, b, s1, s2, newState, dE},
     L  = Length[state];
-    b  = Mod[RandomInteger[{0, L}], L];      (* BUG: bond 0 has double weight *)
+    b  = RandomInteger[{0, L - 1}];
     s1 = b + 1; s2 = Mod[b + 1, L] + 1;
     newState = ReplacePart[state, {s1 -> state[[s2]], s2 -> state[[s1]]}];
-    dE = energy[newState] - energy[state];
+    dE = energy[state] - energy[newState];  (* BUG: sign reversed -- prefers high energy *)
     If[RandomReal[] < MetropolisProb[dE], newState, state]]
 
 

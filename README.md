@@ -176,11 +176,13 @@ DisplayState[state_List] :=
 The failure examples differ from the correct ones by exactly one line:
 
 ```mathematica
-(* Correct *)    b = RandomInteger[{0, L - 1}]
-(* Buggy   *)    b = Mod[RandomInteger[{0, L}], L]   (* bond 0 has double weight *)
+(* Correct *)    dE = energy[newState] - energy[state]
+(* Buggy   *)    dE = energy[state] - energy[newState]   (* sign reversed *)
 ```
 
-Drawing from `{0,...,L}` and wrapping the extra value back to bond 0 means bond 0 is proposed with probability 2/(L+1) while all other bonds have probability 1/(L+1). This asymmetry creates a persistent current that the symbolic checker detects.
+With the wrong sign, `MetropolisProb` receives `-ΔE`: uphill moves (to higher energy) are always accepted, while downhill moves are penalised with `exp(-β|ΔE|)`. The algorithm preferentially visits high-energy states, inverting the Boltzmann distribution. For any pair of states (i, j) with E(i) ≠ E(j), T(i→j)·π(i) ≠ T(j→i)·π(j).
+
+**Note on bond-selection bias.** An asymmetric bond proposal — e.g. `Mod[RandomInteger[{0,L}],L]`, which makes bond 0 twice as likely — does *not* break detailed balance for Kawasaki. Both the forward transition i→j and the reverse transition j→i go through the same bond b and therefore have the same proposal probability, which cancels in the DB condition. Only the acceptance step matters.
 
 ---
 

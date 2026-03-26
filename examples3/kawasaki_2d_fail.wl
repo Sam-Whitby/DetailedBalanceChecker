@@ -1,20 +1,16 @@
 (* ================================================================
-   2D Kawasaki with bond-0 bias -- FAILS detailed balance
+   2D Kawasaki with wrong-sign acceptance -- FAILS detailed balance
    ================================================================
 
    Identical to kawasaki_2d.wl except for one line in Algorithm:
 
-     CORRECT:  b = RandomInteger[{0, 2*L*L - 1}]
-     BUGGY:    b = Mod[RandomInteger[{0, 2*L*L}], 2*L*L]
+     CORRECT:  dE = energy[newState] - energy[state]
+     BUGGY:    dE = energy[state] - energy[newState]
 
-   The buggy version draws from {0,...,2L^2} (one extra value) and
-   wraps the overflow back to bond 0. Bond 0 (site 1 → its right
-   neighbour) is therefore proposed with probability 2/(2L^2+1) while
-   every other bond has probability 1/(2L^2+1).
-
-   This asymmetry creates a net current along the bond connecting
-   site 1 to its right neighbour, which the symbolic checker detects
-   as a detailed-balance violation.
+   Same bug as kawasaki_1d_fail.wl: the sign of dE is reversed, so
+   the algorithm prefers high-energy states (uphill moves always
+   accepted, downhill moves penalised). Detailed balance is violated
+   for any pair of states with different energies.
    ================================================================ *)
 
 
@@ -81,15 +77,15 @@ energy[state_List] :=
       {s, Length[state]}]]]
 
 
-(* ---- Buggy algorithm: bond 0 proposed twice as often -------------------- *)
+(* ---- Buggy algorithm: dE computed with wrong sign ----------------------- *)
 
 Algorithm[state_List] :=
   Module[{L, b, sites, s1, s2, newState, dE},
     L     = Round[Sqrt[Length[state]]];
-    b     = Mod[RandomInteger[{0, 2*L*L}], 2*L*L];   (* BUG: bond 0 has double weight *)
+    b     = RandomInteger[{0, 2*L*L - 1}];
     sites = $bond2D[L, b]; s1 = sites[[1]]; s2 = sites[[2]];
     newState = ReplacePart[state, {s1 -> state[[s2]], s2 -> state[[s1]]}];
-    dE = energy[newState] - energy[state];
+    dE = energy[state] - energy[newState];  (* BUG: sign reversed -- prefers high energy *)
     If[RandomReal[] < MetropolisProb[dE], newState, state]]
 
 
