@@ -113,22 +113,33 @@ If[AssociationQ[$staticSysParams],
                         Lookup[$staticSysParams, "couplings", {}]],
   $staticSymVars = {}];
 
-(* ---- Generate all bit strings up to MaxBitString ---- *)
+(* ---- Generate candidate bit strings ---- *)
 maxBitVec = ToExpression /@ Characters[maxBitString];
 maxLen     = Length[maxBitVec];
 maxVal     = FromDigits[maxBitVec, 2];
 
-allBitStrings = Join[
-  Flatten[Table[IntegerDigits[i, 2, len],
-                {len, 1, maxLen - 1}, {i, 0, 2^len - 1}], 1],
-  Table[IntegerDigits[i, 2, maxLen], {i, 0, maxVal}]];
+(* If the algorithm defines ValidStateIDs[maxId], use it to enumerate only
+   the integer IDs that map to valid states (e.g. perfect-square arrays for
+   the 2D lattice), skipping the bulk of bit strings that BitsToState would
+   immediately reject.  Otherwise fall back to exhaustive enumeration. *)
+allBitStrings =
+  If[Length[DownValues[ValidStateIDs]] > 0,
+    IntegerDigits[#, 2] & /@ ValidStateIDs[maxVal],
+    Join[
+      Flatten[Table[IntegerDigits[i, 2, len],
+                    {len, 1, maxLen - 1}, {i, 0, 2^len - 1}], 1],
+      Table[IntegerDigits[i, 2, maxLen], {i, 0, maxVal}]]];
 
 (* ---- Column widths ---- *)
-colBits  = 14; colState = 26; colN = 9; colSym = 10; colKL = 12; colNum = 10;
+colBits  = Max[14, StringLength[maxBitString] + 2];
+colState = 26; colN = 9; colSym = 10; colFail = 8; colKL = 12; colNum = 10;
+totalCols = colBits + colState + colN +
+  If[mode =!= "Numerical", colSym + colFail, 0] +
+  If[mode =!= "Symbolic",  colKL  + colNum,  0];
 
 (* ---- Print header ---- *)
 Print[];
-Print[StringRepeat["=", 75]];
+Print[StringRepeat["=", totalCols]];
 Print["DETAILED BALANCE CHECKER"];
 Print["File:          ", algFile];
 Print["MaxBitString:  ", maxBitString,
@@ -136,29 +147,30 @@ Print["MaxBitString:  ", maxBitString,
 Print["Mode:          ", mode];
 If[mode =!= "Symbolic", Print["NSteps:        ", nSteps]];
 Print["MaxBitDepth:   ", maxBitDepth];
-Print[StringRepeat["=", 75]];
+Print[StringRepeat["=", totalCols]];
 Print[];
 
 Print[StringPadRight["Bits",    colBits],
       StringPadRight["State",   colState],
       StringPadRight["#States", colN],
-      If[mode =!= "Numerical", StringPadRight["Symbolic",  colSym], ""],
+      If[mode =!= "Numerical",
+         StringPadRight["Symbolic", colSym] <> StringPadRight["#Fail", colFail], ""],
       If[mode =!= "Symbolic",
          StringPadRight["KL", colKL] <> StringPadRight["Numerical", colNum], ""]];
-Print[StringRepeat["-", 75]];
+Print[StringRepeat["-", totalCols]];
 
 (* ================================================================
    Main loop
    ================================================================ *)
-coveredStates = {};
-testedCount   = 0;
+coveredAssoc = <||>;   (* Association for O(1) covered-state lookup *)
+testedCount  = 0;
 symPassCount  = 0; symFailCount  = 0;
 numPassCount  = 0; numFailCount  = 0;
 
 Do[
   state = Check[BitsToState[bitString], $Failed];
   If[state === $Failed || state === None, Continue[]];
-  If[MemberQ[coveredStates, state], Continue[]];
+  If[KeyExistsQ[coveredAssoc, state], Continue[]];
 
   bitsStr  = StringJoin[ToString /@ bitString];
   stateStr = If[Length[DownValues[DisplayState]] > 0,
@@ -178,7 +190,7 @@ Do[
   allStates = Sort @ Keys[treeData];
   matrix    = TreeATToMatrix[treeData];
   nStates   = Length[allStates];
-  coveredStates = Union[coveredStates, allStates];
+  coveredAssoc = Join[coveredAssoc, Association[# -> True & /@ allStates]];
   testedCount++;
 
   (* ---- Per-component symbolic parameters ---- *)
@@ -194,10 +206,11 @@ Do[
   compSymAssumptions = Map[Element[#, Reals] &, compSymVars];
 
   (* ---- Symbolic detailed-balance check ---- *)
-  symResult = "-";
+  symResult = "-"; failStr = "-";
   If[mode =!= "Numerical",
     violations = CheckDetailedBalance[matrix, allStates, $energy, compSymAssumptions];
     symResult  = If[violations === {}, "PASS", "FAIL"];
+    failStr    = If[violations === {}, "0", ToString[Length[violations]]];
     If[symResult === "PASS", symPassCount++, symFailCount++]];
 
   (* ---- Numerical MCMC check ---- *)
@@ -218,7 +231,9 @@ Do[
     kl = Total @ Table[
       With[{p = simFreq[s], q = N @ boltzmann[s]},
         If[p > 0 && q > 0, p * Log[p / q], 0.]], {s, allStates}];
-    klStr     = ToString[NumberForm[kl, {4, 3}]];
+    klStr     = Which[
+                  Abs[kl] < 5.*^-4, "~0",
+                  True,              ToString[NumberForm[kl, {4, 3}]]];
     numResult = If[kl < 0.02, "PASS", "FAIL"];
     If[numResult === "PASS", numPassCount++, numFailCount++]];
 
@@ -226,7 +241,8 @@ Do[
   Print[StringPadRight[bitsStr,           colBits],
         StringPadRight[stateStr,          colState],
         StringPadRight[ToString[nStates], colN],
-        If[mode =!= "Numerical", StringPadRight[symResult, colSym], ""],
+        If[mode =!= "Numerical",
+           StringPadRight[symResult, colSym] <> StringPadRight[failStr, colFail], ""],
         If[mode =!= "Symbolic",
            StringPadRight[klStr, colKL] <> StringPadRight[numResult, colNum], ""]],
 
@@ -236,7 +252,7 @@ Do[
    Summary
    ================================================================ *)
 Print[];
-Print[StringRepeat["-", 75]];
+Print[StringRepeat["-", totalCols]];
 Print["Systems tested (distinct connected components): ", testedCount];
 If[mode =!= "Numerical",
   Print["Symbolic  -- PASS: ", symPassCount, "  FAIL: ", symFailCount]];
@@ -247,4 +263,4 @@ If[symFailCount == 0 && numFailCount == 0 && testedCount > 0,
   If[testedCount == 0,
     Print["No valid states found for the given MaxBitString."],
     Print["*** DETAILED BALANCE VIOLATION DETECTED ***"]]];
-Print[StringRepeat["=", 75]];
+Print[StringRepeat["=", totalCols]];

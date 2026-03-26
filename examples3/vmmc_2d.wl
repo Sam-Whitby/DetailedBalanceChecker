@@ -129,19 +129,19 @@ DynamicSymParams[states_List] :=
         {a, types}, {b, types}]|>]
 
 
-(* ---- Energy (identical to kawasaki_2d.wl) -------------------------------- *)
+(* ---- Energy -------------------------------------------------------------- *)
 
-(* Sum J_ab over all horizontal and vertical bonds of the L×L torus.
-   On the L=2 torus, right(s)=left(s) and down(s)=up(s) for every site, so
-   the naive sum counts each undirected bond twice.  The /If[L==2,2,1] factor
-   corrects this.  For L≥3 each directed right/down bond visits every
-   undirected edge exactly once, so the divisor is 1. *)
+(* Unique undirected bonds on the L×L torus, memoised per L.
+   Sorting each {s, neighbour} pair before DeleteDuplicates ensures that the
+   same undirected bond (e.g. {1,2} from s=1 and {2,1} from s=2) is counted
+   exactly once for every L, including L=2 where right(s)=left(s). *)
+$uniqueBonds2D[L_] := $uniqueBonds2D[L] =
+  DeleteDuplicates[Sort /@ Flatten[
+    Table[{{s, $right2D[s,L]}, {s, $down2D[s,L]}}, {s, L^2}], 1]]
+
 energy[state_List] :=
   With[{L = Round[Sqrt[Length[state]]]},
-    Total[Table[
-      $pairJ[state[[s]], state[[$right2D[s, L]]]] +
-      $pairJ[state[[s]], state[[$down2D[s, L]]]],
-      {s, Length[state]}]] / If[L == 2, 2, 1]]
+    Total[$pairJ[state[[#[[1]]]], state[[#[[2]]]]] & /@ $uniqueBonds2D[L]]]
 
 
 (* ---- VMMC helpers -------------------------------------------------------- *)
@@ -217,14 +217,11 @@ $vmmcBuildCluster[state_, L_, seed_, dir_] :=
           eInit = $virtualPairEnergy[pType, qType, p,     q, L];  (* current bond *)
           eFwd  = $virtualPairEnergy[pType, qType, pPost, q, L]; (* fwd virtual  *)
           eRev  = $virtualPairEnergy[pType, qType, pRev,  q, L]; (* rev virtual  *)
-          (* Link weights as Piecewise (not Max) so FullSimplify can resolve
-             sign-cases of J independently.  An explicit {1, e===Infinity} guard
-             is prepended to each weight: when the virtual position coincides with
-             an occupied site, $virtualPairEnergy returns Infinity, and without
-             this guard Mathematica would attempt Exp[β(finite-Infinity)] with
-             symbolic β, producing a ComplexInfinity warning.  The guard short-
-             circuits to wFwd=1 (mandatory link attempt) without evaluating the
-             problematic exponent. *)
+          (* Piecewise (not Max) so FullSimplify can resolve sign-cases of J.
+             Leading {1, e===Infinity} guards prevent Exp[β(finite-Infinity)]
+             with symbolic β, which would produce ComplexInfinity warnings.
+             Ratio case guide: eFwd=∞,eRev=∞→1; eFwd=∞,eInit<eRev→wRev;
+             eFwd=∞→0; eRev=∞,eInit<eFwd→1; else→Min[wRev/wFwd,1]. *)
           wFwd = Piecewise[{
               {1,                               eFwd === Infinity},
               {1 - Exp[\[Beta] (eInit - eFwd)], eInit < eFwd}},
@@ -235,19 +232,6 @@ $vmmcBuildCluster[state_, L_, seed_, dir_] :=
             0];
           r1 = RandomReal[];
           If[r1 <= wFwd,
-            (* A link is attempted; determine whether it is frustrated.
-               The ratio wRev/wFwd is a Piecewise that:
-               (1) Handles Infinity cases explicitly to avoid Exp[β×(-Infinity)]
-                   with symbolic β (ComplexInfinity → Power::infy warning).
-               (2) Avoids 0/0 (Indeterminate) when wFwd=0 (else-branch = 0).
-               (3) Min[...,1] clamps to [0,1]: if wRev>wFwd the raw ratio
-                   exceeds 1 and would give negative frustration probability;
-                   clamping to 1 makes r2>1 impossible → particle always recruited.
-               Physics of Infinity cases:
-               • eFwd=∞ && eRev=∞: both virtual sites collide → always recruit
-               • eFwd=∞, eInit<eRev: forward collision only → recruit with prob wRev
-               • eFwd=∞ otherwise: forward collision, wRev=0 → always frustrated
-               • eRev=∞, eInit<eFwd: reverse collision only → always recruit      *)
             r2 = RandomReal[];
             If[r2 > Piecewise[{
                   {1,                               eFwd === Infinity && eRev === Infinity},
@@ -258,9 +242,7 @@ $vmmcBuildCluster[state_, L_, seed_, dir_] :=
                    eInit < eFwd && eInit < eRev},
                   {0,                               eInit < eFwd}},
                 0],
-              (* Frustrated: forward link forms but reverse does not → reject *)
               frustrated = True; Break[],
-              (* Genuine link: recruit q, continue BFS from q *)
               AppendTo[cluster, q];
               inCluster[q] = True;
               AppendTo[queue, q]
@@ -304,14 +286,10 @@ Algorithm[state_List] :=
          newState[[dest]] = state[[cluster[[i]]]]
        ], {i, Length[cluster]}];
 
-    (* Evaluate the total energy change and the corresponding Metropolis
-       probability.  In VMMC the link-probability mechanism already
-       enforces superdetailed balance, so MetropolisProb is not used as the
-       acceptance gate here; doing so would double-count bond energy changes
-       and break detailed balance.  Both functions are called for consistency
-       with the upstream checker interface and to allow external validation. *)
+    (* MetropolisProb called for checker interface compliance only;
+       VMMC superdetailed balance is enforced by the link probabilities. *)
     dE = energy[newState] - energy[state];
-    MetropolisProb[dE];   (* called for interface compliance; result not gated *)
+    MetropolisProb[dE];
 
     newState
   ]
@@ -335,5 +313,16 @@ DisplayState[state_List] :=
       Table["{" <> StringRiffle[ToString /@ state[[(r-1)*L+1 ;; r*L]], ","] <> "}",
             {r, 1, L}],
       "|"]]
+
+(* Return all integer IDs that decode to L×L (perfect-square) arrays with
+   ID ≤ maxId.  check.wls uses this to skip the ~99% of bit strings that
+   BitsToState would immediately reject, reducing pre-3×3 overhead from
+   ~500K BitsToState calls to the small set of valid grid-state IDs. *)
+ValidStateIDs[maxId_Integer] :=
+  Module[{L = 1, ids = {}},
+    While[$cLPre[L^2] <= maxId,
+      ids = Join[ids, Range[$cLPre[L^2], Min[$cLPre[L^2 + 1] - 1, maxId]]];
+      L++];
+    ids]
 
 numBeta = 1
