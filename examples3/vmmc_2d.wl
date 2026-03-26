@@ -191,15 +191,26 @@ $vmmcBuildCluster[state_, L_, seed_, dir_] :=
       pType = state[[p]];
       pPost = $applyDir[p, dir, L];                     (* virtual fwd site *)
       pRev  = $applyDir[p, {-dir[[1]], -dir[[2]]}, L];  (* virtual rev site *)
-      nbrs  = $allNeighbors2D[p, L];                    (* 4 NN sites of p *)
+      (* Union of current, forward-virtual, and reverse-virtual neighbour shells.
+         This is essential: a particle q not currently bonded to p but adjacent
+         to pPost (or pRev) changes its pair energy with p upon the move and
+         MUST be subjected to a link test.  Without it, bond-forming moves are
+         never suppressed, violating detailed balance for repulsive (J>0) or
+         mixed-sign interactions.  DeleteDuplicates prevents double-testing,
+         which is also critical on L=2 where right=left and up=down. *)
+      nbrs  = DeleteDuplicates[Join[
+                  $allNeighbors2D[p, L],
+                  $allNeighbors2D[pPost, L],
+                  $allNeighbors2D[pRev, L]]];
 
-      (* Test each current neighbour of p for potential link formation *)
+      (* Test every particle in the combined neighbour shell for link formation *)
       Do[
         q = nbrs[[k]];
         If[state[[q]] =!= 0 && !KeyExistsQ[inCluster, q],
           qType = state[[q]];
-          (* Compute the three bond energies needed for link weights *)
-          eInit = $pairJ[pType, qType];                         (* pre-move NN bond *)
+          (* eInit via $virtualPairEnergy (not $pairJ) because q may be a future
+             neighbour rather than a current one, in which case eInit = 0. *)
+          eInit = $virtualPairEnergy[pType, qType, p,     q, L];  (* current bond *)
           eFwd  = $virtualPairEnergy[pType, qType, pPost, q, L]; (* fwd virtual  *)
           eRev  = $virtualPairEnergy[pType, qType, pRev,  q, L]; (* rev virtual  *)
           (* Link weights: positive when the bond weakens (energy rises) *)
@@ -219,7 +230,7 @@ $vmmcBuildCluster[state_, L_, seed_, dir_] :=
             ]
           ]
         ],
-        {k, 4}
+        {k, Length[nbrs]}
       ]
     ];
     If[frustrated, None, cluster]
