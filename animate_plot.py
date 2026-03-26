@@ -49,6 +49,11 @@ def make_colormap(n_types: int):
     return ListedColormap(colors)
 
 
+def make_simple_colormap():
+    """2-colour map: index 0 → hole (light grey), index 1 → particle (blue)."""
+    return ListedColormap(["#dddddd", "#4c72b0"])
+
+
 def main():
     if len(sys.argv) < 2:
         print("Usage: python3 animate_plot.py <data.json>")
@@ -62,14 +67,20 @@ def main():
     n_rows    = d["grid_rows"]
     n_cols    = d["grid_cols"]
     n_types   = max(int(d.get("n_types", 1)), 1)
-    delay_ms  = int(d.get("delay_ms", 100))
+    fps       = float(d.get("fps", 1000.0 / int(d.get("delay_ms", 100))))
+    delay_ms  = 1000.0 / fps          # interval passed to FuncAnimation
+    simple    = bool(d.get("simple", False))
     algo_name = d.get("algo_file", "")
     n_frames  = len(steps)
     params    = d.get("params", {})
 
-    cmap  = make_colormap(n_types)
-    vmin  = -0.5
-    vmax  = n_types + 0.5
+    if simple:
+        cmap = make_simple_colormap()
+        vmin, vmax = -0.5, 1.5   # 0 = hole, 1 = any particle
+    else:
+        cmap = make_colormap(n_types)
+        vmin = -0.5
+        vmax = n_types + 0.5
 
     # ------------------------------------------------------------------ #
     # Figure layout
@@ -80,7 +91,8 @@ def main():
     fig.patch.set_facecolor("#f5f5f5")
 
     # Title: algorithm file; subtitle: parameter values
-    fig.suptitle(algo_name, fontsize=9, y=0.99, style="italic")
+    mode_tag = f"  [simple {fps:.0f} fps]" if simple else f"  [{fps:.1f} fps]"
+    fig.suptitle(algo_name + mode_tag, fontsize=9, y=0.99, style="italic")
     if params:
         param_str = "   ".join(
             f"β={v:.3f}" if k == "beta" else f"{k}={v:.3f}"
@@ -90,7 +102,13 @@ def main():
                  fontfamily="monospace")
 
     # ---- Lattice panel ------------------------------------------------ #
-    grid0 = np.array(states[0], dtype=float).reshape(n_rows, n_cols)
+    def to_grid(state):
+        arr = np.array(state, dtype=float).reshape(n_rows, n_cols)
+        if simple:
+            arr = (arr > 0).astype(float)   # collapse all types → 1
+        return arr
+
+    grid0 = to_grid(states[0])
     im = ax_grid.imshow(
         grid0, cmap=cmap, vmin=vmin, vmax=vmax,
         interpolation="nearest", aspect="equal")
@@ -114,13 +132,19 @@ def main():
     ax_grid.tick_params(which="minor", length=0)
 
     # Colourbar legend
-    legend_handles = [Patch(facecolor="#1a1a1a", label="0  (empty)")]
-    tab10_list = ["#4c72b0","#dd8452","#55a868","#c44e52","#8172b3",
-                  "#937860","#da8bc3","#8c8c8c","#ccb974","#64b5cd"]
-    for k in range(1, n_types + 1):
-        legend_handles.append(
-            Patch(facecolor=tab10_list[(k-1) % len(tab10_list)],
-                  label=f"{k}  (type {k})"))
+    if simple:
+        legend_handles = [
+            Patch(facecolor="#dddddd", label="0  (hole)"),
+            Patch(facecolor="#4c72b0", label="n>0  (particle)"),
+        ]
+    else:
+        legend_handles = [Patch(facecolor="#1a1a1a", label="0  (empty)")]
+        tab10_list = ["#4c72b0","#dd8452","#55a868","#c44e52","#8172b3",
+                      "#937860","#da8bc3","#8c8c8c","#ccb974","#64b5cd"]
+        for k in range(1, n_types + 1):
+            legend_handles.append(
+                Patch(facecolor=tab10_list[(k-1) % len(tab10_list)],
+                      label=f"{k}  (type {k})"))
     ax_grid.legend(handles=legend_handles, loc="upper left",
                    bbox_to_anchor=(1.01, 1), fontsize=8,
                    framealpha=0.9, title="Particle", title_fontsize=8)
@@ -152,7 +176,7 @@ def main():
     # ------------------------------------------------------------------ #
     def update(frame: int):
         # Lattice
-        grid = np.array(states[frame], dtype=float).reshape(n_rows, n_cols)
+        grid = to_grid(states[frame])
         im.set_data(grid)
         ax_grid.set_title(f"Step {steps[frame]}", fontsize=10)
 
@@ -167,7 +191,7 @@ def main():
 
     ani = animation.FuncAnimation(
         fig, update, frames=n_frames,
-        interval=delay_ms, blit=False, repeat=False)
+        interval=delay_ms, blit=simple, repeat=False)
 
     plt.tight_layout(rect=[0, 0, 1, 0.93])
     plt.show()

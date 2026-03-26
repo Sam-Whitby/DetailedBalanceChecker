@@ -4,8 +4,8 @@
    ================================================================
    Usage:
      wolframscript -file animate.wls <alg_file> \
-       Sites=<n> N=<n> [Steps=200] [Beta=1] [Delay=0.1] \
-       [RecordEvery=1] [J12=0.5 ...]
+       Sites=<n> N=<n> [Steps=200] [Beta=1] [FPS=10] \
+       [Simple=1] [RecordEvery=1] [J12=0.5 ...]
 
    Runs the algorithm for the specified number of steps, collects
    the state and energy at each recorded step, writes the data to
@@ -23,19 +23,21 @@
      N=<n>              Number of labeled particles (types 1..N).
      Steps=<n>          MCMC steps to run (default 200).
      Beta=<f>           Inverse temperature (overrides numBeta in file).
-     Delay=<f>          Seconds per animation frame (default 0.1).
+     FPS=<f>            Animation frame rate in frames per second (default 10).
+     Simple=1           Use fast 2-colour mode: holes vs particles.
+                        Renders much faster, enabling high frame rates.
      RecordEvery=<n>    Record state every n steps (default 1).
      J<a><b>=<f>        Set coupling constant J_ab (random if omitted).
 
    Examples:
      wolframscript -file animate.wls examples3/kawasaki_1d.wl \
-       Sites=6 N=3 Steps=500 Delay=0.05
+       Sites=6 N=3 Steps=500 FPS=30 Simple=1
 
      wolframscript -file animate.wls examples3/kawasaki_2d.wl \
-       Sites=9 N=4 Steps=300 Delay=0.1 J12=1.5
+       Sites=9 N=4 Steps=300 FPS=10 J12=1.5
 
      wolframscript -file animate.wls examples3/cluster_2d.wl \
-       Sites=9 N=3 Steps=400 Delay=0.08 RecordEvery=2
+       Sites=9 N=3 Steps=400 FPS=15 RecordEvery=2
    ================================================================ *)
 
 (* Real MetropolisProb for actual execution (not BFS interception) *)
@@ -59,7 +61,8 @@ If[Length[posArgs] < 1 ||
   Print["  N=<n>            number of labeled particles (types 1..N)"];
   Print["  Steps=<n>        MCMC steps (default 200)"];
   Print["  Beta=<f>         inverse temperature (default from .wl file)"];
-  Print["  Delay=<f>        seconds per animation frame (default 0.1)"];
+  Print["  FPS=<f>          animation frame rate in frames per second (default 10)"];
+  Print["  Simple=1         fast 2-colour mode: holes vs particles"];
   Print["  RecordEvery=<n>  record every nth step (default 1)"];
   Print["  J<a><b>=<f>      coupling constant (random if omitted)"];
   Exit[1]];
@@ -69,7 +72,8 @@ nSites      = 4;
 nPart       = 2;
 nSteps      = 200;
 animBeta    = None;
-delay       = 0.1;
+fps         = 10.;
+simpleMode  = False;
 recordEvery = 1;
 
 Do[
@@ -77,7 +81,10 @@ Do[
   If[StringMatchQ[opt, "N="           ~~ __], nPart       = ToExpression[StringDrop[opt,  2]]];
   If[StringMatchQ[opt, "Steps="       ~~ __], nSteps      = ToExpression[StringDrop[opt,  6]]];
   If[StringMatchQ[opt, "Beta="        ~~ __], animBeta    = ToExpression[StringDrop[opt,  5]]];
-  If[StringMatchQ[opt, "Delay="       ~~ __], delay       = ToExpression[StringDrop[opt,  6]]];
+  If[StringMatchQ[opt, "FPS="         ~~ __], fps         = N[ToExpression[StringDrop[opt,  4]]]];
+  (* Legacy Delay= support: convert seconds -> fps *)
+  If[StringMatchQ[opt, "Delay="       ~~ __], fps         = N[1 / ToExpression[StringDrop[opt, 6]]]];
+  If[StringMatchQ[opt, "Simple="      ~~ __], simpleMode  = (StringDrop[opt, 7] =!= "0")];
   If[StringMatchQ[opt, "RecordEvery=" ~~ __], recordEvery = ToExpression[StringDrop[opt, 12]]],
   {opt, kvArgs}];
 
@@ -151,7 +158,8 @@ Export[dataFile,
     "grid_rows"  -> nRows,
     "grid_cols"  -> nCols,
     "n_types"    -> If[types === {}, 0, Max[types]],
-    "delay_ms"   -> Round[delay * 1000],
+    "fps"        -> fps,
+    "simple"     -> simpleMode,
     "steps"      -> stepsRec,
     "states"     -> statesRec,
     "energies"   -> energiesRec,
