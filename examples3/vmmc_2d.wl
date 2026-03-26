@@ -217,8 +217,8 @@ $vmmcBuildCluster[state_, L_, seed_, dir_] :=
              FullSimplify can resolve each sign-case of J independently.
              Max[1-Exp[x],0] is equivalent but opaque to FullSimplify for
              unknown-sign symbolic x; Piecewise exposes the case structure. *)
-          wFwd = Piecewise[{{1 - Exp[eInit - eFwd], eInit < eFwd}}, 0];
-          wRev = Piecewise[{{1 - Exp[eInit - eRev], eInit < eRev}}, 0];
+          wFwd = Piecewise[{{1 - Exp[\[Beta] (eInit - eFwd)], eInit < eFwd}}, 0];
+          wRev = Piecewise[{{1 - Exp[\[Beta] (eInit - eRev)], eInit < eRev}}, 0];
           r1 = RandomReal[];
           If[r1 <= wFwd,
             (* A link is attempted; determine whether it is frustrated.
@@ -235,7 +235,7 @@ $vmmcBuildCluster[state_, L_, seed_, dir_] :=
                    the particle is always recruited — the correct behaviour. *)
             r2 = RandomReal[];
             If[r2 > Piecewise[{
-                  {Min[(1 - Exp[eInit - eRev]) / (1 - Exp[eInit - eFwd]), 1],
+                  {Min[(1 - Exp[\[Beta] (eInit - eRev)]) / (1 - Exp[\[Beta] (eInit - eFwd)]), 1],
                    eInit < eFwd && eInit < eRev},
                   {0, eInit < eFwd}},
                 0],
