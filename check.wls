@@ -6,40 +6,30 @@
      wolframscript -file check.wls <alg_file> [options]
 
    The .wl file must define:
-     energy[state_]      bare energy function (no beta)
-     Algorithm[state_]   MCMC move function
-     BitsToState[bits_]  {0,1,...} list -> system state, or None if
-                         the bit pattern does not correspond to a
-                         valid state for this system
-     numBeta             numeric inverse temperature
-   Optionally:
-     symParams = <|"eps" -> {...}, "couplings" -> {...}|>
-     (keeps energy parameters symbolic during the symbolic check;
-      assigns random numeric values for the MCMC run)
+     energy[state_]       bare energy function (no beta)
+     Algorithm[state_]    MCMC move function using native random calls
+     BitsToState[bits_]   {0,1,...} list -> state, or None
+     numBeta              numeric inverse temperature
 
-   How it works:
-     The checker generates all bit strings in order of increasing
-     length, then numerically within each length, stopping at (and
-     including) the specified MaxBitString.  For each bit string it
-     calls BitsToState to obtain a seed state.  If BitsToState returns
-     None the string is skipped.  Otherwise BFS discovers the full
-     connected component reachable from that seed.  If the component
-     has already been seen (deduplication), the string is skipped.
-     Otherwise the checker runs the requested symbolic and/or
-     numerical tests and prints one result row.
+   Optional (for symbolic check with energy parameters):
+     symParams = <|"eps" -> {...}, "couplings" -> {...}|>
+       -- static symbolic parameters (always the same across components)
+
+     DynamicSymParams[states_List] -> <|"couplings" -> {...}|>
+       -- called once per component; return the J symbols needed for
+          that component (e.g. auto-generated from particle types).
+          Takes precedence over / merges with static symParams.
 
    Options (key=value, no spaces around =):
-     MaxBitString=XXXX   Largest bit string to test, e.g. MaxBitString=111111
-                         Leading zeros are significant.  The checker
-                         tests all strings from length 1 up through
-                         the length of XXXX, stopping at XXXX within
-                         the final length. (default: MaxBitString=11111111)
-     Mode=Symbolic       Symbolic detailed-balance check only
-     Mode=Numerical      Numerical MCMC check only
-     Mode=Both           Both checks (default)
-     NSteps=N            MCMC steps per seed state (default 50000)
-     MaxBitDepth=N       BFS tree depth cap per state (default 20)
-     Verbose=True/False  Print per-state BFS progress (default False)
+     MaxBitString=XXXX    Largest bit string to test (default 11111111)
+                          All strings from length 1 through len(XXXX),
+                          stopping at XXXX within the final length.
+     Mode=Symbolic        Symbolic detailed-balance check only
+     Mode=Numerical       Numerical MCMC check only
+     Mode=Both            Both checks (default)
+     NSteps=N             MCMC steps per seed state (default 50000)
+     MaxBitDepth=N        BFS tree depth cap per state (default 20)
+     Verbose=True/False   Print per-state BFS progress (default False)
    ================================================================ *)
 
 scriptDir = DirectoryName[$InputFileName];
@@ -56,21 +46,18 @@ kvArgs  = Select[args,  StringMatchQ[#, __ ~~ "=" ~~ __] &];
 If[Length[posArgs] < 1,
   Print["Usage: wolframscript -file check.wls <alg_file> [options]"];
   Print[""];
-  Print["The .wl file must define:"];
-  Print["  energy[state_]      bare energy (no beta)"];
-  Print["  Algorithm[state_]   MCMC move function"];
-  Print["  BitsToState[bits_]  {0,1,...} -> state, or None if invalid"];
-  Print["  numBeta             numeric inverse temperature"];
-  Print["  symParams           (optional) symbolic parameter association"];
+  Print["Required definitions in the .wl file:"];
+  Print["  energy[state_]       bare energy (no beta)"];
+  Print["  Algorithm[state_]    MCMC move function"];
+  Print["  BitsToState[bits_]   {0,1,...} -> state, or None if invalid"];
+  Print["  numBeta              numeric inverse temperature"];
   Print[""];
   Print["Options (key=value, no spaces around =):"];
-  Print["  MaxBitString=XXXX   Largest bit string to test (default 11111111)"];
-  Print["                      e.g. MaxBitString=111111 or MaxBitString=0111"];
-  Print["                      Leading zeros are significant."];
+  Print["  MaxBitString=XXXX    Largest bit string (default 11111111)"];
   Print["  Mode=Symbolic|Numerical|Both  (default Both)"];
-  Print["  NSteps=N            MCMC steps per system (default 50000)"];
-  Print["  MaxBitDepth=N       BFS depth cap (default 20)"];
-  Print["  Verbose=True/False  Per-state BFS output (default False)"];
+  Print["  NSteps=N             MCMC steps per system (default 50000)"];
+  Print["  MaxBitDepth=N        BFS depth cap (default 20)"];
+  Print["  Verbose=True/False   Per-state BFS output (default False)"];
   Exit[1]];
 
 (* ---- Option defaults ---- *)
@@ -100,7 +87,7 @@ If[!FileExistsQ[algFile],
   Print["ERROR: File not found: ", posArgs[[1]]]; Exit[1]];
 
 (* ---- Load algorithm file ---- *)
-ClearAll[Algorithm, energy, BitsToState, numBeta, symParams, DisplayState];
+ClearAll[Algorithm, energy, BitsToState, numBeta, symParams, DynamicSymParams, DisplayState];
 Print["Loading: ", algFile];
 Get[algFile];
 
@@ -114,53 +101,35 @@ If[Length[DownValues[BitsToState]] == 0,
 If[!ValueQ[numBeta] || !NumericQ[numBeta],
   Print["ERROR: 'numBeta' (numeric) not defined in ", posArgs[[1]]]; Exit[1]];
 
-$alg       = Algorithm;
-$energy    = energy;
-$numBeta   = numBeta;
-$sysParams = If[ValueQ[symParams], symParams, None];
+$alg         = Algorithm;
+$energy      = energy;
+$numBeta     = numBeta;
+$hasDynParams = Length[DownValues[DynamicSymParams]] > 0;
 
-(* ---- Symbolic energy parameters ---- *)
-If[AssociationQ[$sysParams],
-  $symVars        = Join[Lookup[$sysParams, "eps",       {}],
-                         Lookup[$sysParams, "couplings", {}]];
-  $symAssumptions = Map[Element[#, Reals] &, $symVars],
-  (* else: energy is purely numeric *)
-  $symVars        = {};
-  $symAssumptions = {}];
+(* Static symbolic parameters (may be None if only DynamicSymParams is used) *)
+$staticSysParams = If[ValueQ[symParams], symParams, None];
+If[AssociationQ[$staticSysParams],
+  $staticSymVars = Join[Lookup[$staticSysParams, "eps",       {}],
+                        Lookup[$staticSysParams, "couplings", {}]],
+  $staticSymVars = {}];
 
 (* ---- Generate all bit strings up to MaxBitString ---- *)
-(* Order: increasing length, then numerically within each length.
-   Within the final length, only up to and including MaxBitString. *)
 maxBitVec = ToExpression /@ Characters[maxBitString];
 maxLen     = Length[maxBitVec];
 maxVal     = FromDigits[maxBitVec, 2];
 
 allBitStrings = Join[
-  (* All bit strings of lengths 1 .. maxLen-1 *)
   Flatten[Table[IntegerDigits[i, 2, len],
-                {len, 1, maxLen - 1},
-                {i,   0, 2^len - 1}],
-          1],
-  (* Bit strings of length maxLen from 00..0 up to MaxBitString *)
-  Table[IntegerDigits[i, 2, maxLen], {i, 0, maxVal}]
-];
+                {len, 1, maxLen - 1}, {i, 0, 2^len - 1}], 1],
+  Table[IntegerDigits[i, 2, maxLen], {i, 0, maxVal}]];
 
 (* ---- Column widths ---- *)
-colBits  = 14;
-colState = 26;
-colN     = 9;
-colSym   = 10;
-colKL    = 12;
-colNum   = 10;
-
-totalWidth = colBits + colState + colN +
-  If[mode =!= "Numerical", colSym, 0] +
-  If[mode =!= "Symbolic",  colKL + colNum, 0];
+colBits  = 14; colState = 26; colN = 9; colSym = 10; colKL = 12; colNum = 10;
 
 (* ---- Print header ---- *)
 Print[];
 Print[StringRepeat["=", 75]];
-Print["DETAILED BALANCE CHECKER -- BATCH MODE"];
+Print["DETAILED BALANCE CHECKER"];
 Print["File:          ", algFile];
 Print["MaxBitString:  ", maxBitString,
       "  (", Length[allBitStrings], " bit strings generated)"];
@@ -175,8 +144,7 @@ Print[StringPadRight["Bits",    colBits],
       StringPadRight["#States", colN],
       If[mode =!= "Numerical", StringPadRight["Symbolic",  colSym], ""],
       If[mode =!= "Symbolic",
-         StringPadRight["KL",       colKL] <>
-         StringPadRight["Numerical",colNum], ""]];
+         StringPadRight["KL", colKL] <> StringPadRight["Numerical", colNum], ""]];
 Print[StringRepeat["-", 75]];
 
 (* ================================================================
@@ -184,99 +152,85 @@ Print[StringRepeat["-", 75]];
    ================================================================ *)
 coveredStates = {};
 testedCount   = 0;
-symPassCount  = 0;
-symFailCount  = 0;
-numPassCount  = 0;
-numFailCount  = 0;
+symPassCount  = 0; symFailCount  = 0;
+numPassCount  = 0; numFailCount  = 0;
 
 Do[
-  (* Convert bit string to system state via user-supplied bijection *)
   state = Check[BitsToState[bitString], $Failed];
   If[state === $Failed || state === None, Continue[]];
-
-  (* Skip if this seed is already in a known connected component *)
   If[MemberQ[coveredStates, state], Continue[]];
 
   bitsStr  = StringJoin[ToString /@ bitString];
   stateStr = If[Length[DownValues[DisplayState]] > 0,
-               DisplayState[state],
-               ToString[state]];
+               DisplayState[state], ToString[state]];
 
-  (* ---- BFS: discover connected component from seed ---- *)
+  (* ---- BFS: discover connected component ---- *)
   treeData = BuildTreeAT[state, $alg,
                "MaxBitDepth" -> maxBitDepth,
                "TimeLimit"   -> 120.,
                "Verbose"     -> verbose];
 
-  (* Algorithm contains an uninterceptable call -- print error and move on *)
   If[MatchQ[treeData, $dbc$cantHandle[_]],
-    Print[StringPadRight[bitsStr,  colBits],
-          StringPadRight[stateStr, colState],
-          StringPadRight["?",      colN],
-          "ERROR: ", treeData[[1]]];
-    testedCount++;
-    Continue[]];
+    Print[StringPadRight[bitsStr,  colBits], StringPadRight[stateStr, colState],
+          StringPadRight["?", colN], "ERROR: ", treeData[[1]]];
+    testedCount++; Continue[]];
 
   allStates = Sort @ Keys[treeData];
   matrix    = TreeATToMatrix[treeData];
   nStates   = Length[allStates];
-
-  (* Record all discovered states so later seeds in this component
-     are skipped *)
   coveredStates = Union[coveredStates, allStates];
   testedCount++;
+
+  (* ---- Per-component symbolic parameters ---- *)
+  (* If DynamicSymParams is defined, call it with this component's states
+     to get exactly the symbolic variables needed (e.g. the J_ab coupling
+     symbols for the particle types actually present). Merge with any
+     static symParams from the .wl file. *)
+  If[$hasDynParams,
+    dynP    = DynamicSymParams[allStates];
+    dynVars = Join[Lookup[dynP, "eps", {}], Lookup[dynP, "couplings", {}]];
+    compSymVars = Union[$staticSymVars, dynVars],
+    compSymVars = $staticSymVars];
+  compSymAssumptions = Map[Element[#, Reals] &, compSymVars];
 
   (* ---- Symbolic detailed-balance check ---- *)
   symResult = "-";
   If[mode =!= "Numerical",
-    violations = CheckDetailedBalance[
-                   matrix, allStates, $energy, $symAssumptions];
+    violations = CheckDetailedBalance[matrix, allStates, $energy, compSymAssumptions];
     symResult  = If[violations === {}, "PASS", "FAIL"];
-    If[symResult === "PASS", symPassCount++, symFailCount++]
-  ];
+    If[symResult === "PASS", symPassCount++, symFailCount++]];
 
   (* ---- Numerical MCMC check ---- *)
-  (* Skip for trivial single-state systems *)
-  klStr     = "-";
-  numResult = "-";
+  klStr = "-"; numResult = "-";
   If[mode =!= "Symbolic" && nStates > 1,
-    If[$symVars =!= {},
-      (* Assign random numeric values to symbolic energy parameters *)
-      numSubs = MakeNumericSubs[$sysParams, 42];
-      numVals = Last /@ numSubs;
-      Block[Evaluate[$symVars],
-        MapThread[Set, {$symVars, numVals}];
-        mcmcCounts = RunNumericalMCMCAT[allStates, $alg, $numBeta,
-                       "NSteps" -> nSteps];
-        boltzmann  = BoltzmannWeightsAT[allStates, $energy, $numBeta]
-      ],
-      (* Fully numeric energy: proceed directly *)
-      mcmcCounts = RunNumericalMCMCAT[allStates, $alg, $numBeta,
-                     "NSteps" -> nSteps];
-      boltzmann  = BoltzmannWeightsAT[allStates, $energy, $numBeta]
-    ];
+    If[compSymVars =!= {},
+      (* Assign reproducible random values to symbolic energy parameters *)
+      SeedRandom[42];
+      compNumVals = RandomReal[{-1, 1}, Length[compSymVars]];
+      Block[Evaluate[compSymVars],
+        MapThread[Set, {compSymVars, compNumVals}];
+        mcmcCounts = RunNumericalMCMCAT[allStates, $alg, $numBeta, "NSteps" -> nSteps];
+        boltzmann  = BoltzmannWeightsAT[allStates, $energy, $numBeta]],
+      (* Fully numeric energy *)
+      mcmcCounts = RunNumericalMCMCAT[allStates, $alg, $numBeta, "NSteps" -> nSteps];
+      boltzmann  = BoltzmannWeightsAT[allStates, $energy, $numBeta]];
     simFreq = N[# / Total[mcmcCounts]] & /@ mcmcCounts;
     kl = Total @ Table[
       With[{p = simFreq[s], q = N @ boltzmann[s]},
         If[p > 0 && q > 0, p * Log[p / q], 0.]], {s, allStates}];
     klStr     = ToString[NumberForm[kl, {4, 3}]];
     numResult = If[kl < 0.02, "PASS", "FAIL"];
-    If[numResult === "PASS", numPassCount++, numFailCount++]
-  ];
+    If[numResult === "PASS", numPassCount++, numFailCount++]];
 
   (* ---- Print result row ---- *)
-  symCol = If[mode =!= "Numerical", StringPadRight[symResult, colSym], ""];
-  numCol = If[mode =!= "Symbolic",
-              StringPadRight[klStr,     colKL] <>
-              StringPadRight[numResult, colNum], ""];
-  Print[StringPadRight[bitsStr,             colBits],
-        StringPadRight[stateStr,            colState],
-        StringPadRight[ToString[nStates],   colN],
-        symCol,
-        numCol],
+  Print[StringPadRight[bitsStr,           colBits],
+        StringPadRight[stateStr,          colState],
+        StringPadRight[ToString[nStates], colN],
+        If[mode =!= "Numerical", StringPadRight[symResult, colSym], ""],
+        If[mode =!= "Symbolic",
+           StringPadRight[klStr, colKL] <> StringPadRight[numResult, colNum], ""]],
 
-  {bitString, allBitStrings}
-];
+  {bitString, allBitStrings}];
 
 (* ================================================================
    Summary
@@ -292,7 +246,5 @@ If[symFailCount == 0 && numFailCount == 0 && testedCount > 0,
   Print["All tested systems satisfy detailed balance."],
   If[testedCount == 0,
     Print["No valid states found for the given MaxBitString."],
-    Print["*** DETAILED BALANCE VIOLATION DETECTED ***"]
-  ]
-];
+    Print["*** DETAILED BALANCE VIOLATION DETECTED ***"]]];
 Print[StringRepeat["=", 75]];

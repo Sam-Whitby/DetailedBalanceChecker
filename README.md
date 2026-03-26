@@ -1,194 +1,227 @@
 # DetailedBalanceChecker
 
-Symbolic and numerical checker for the detailed balance condition in MCMC algorithms.
+Exhaustive symbolic and numerical checker for the detailed balance condition in MCMC algorithms.
 Written in Mathematica, run from the terminal via `wolframscript`.
 
 ---
 
-## What it does
+## How it works
 
-Given an MCMC algorithm and an energy function the checker:
+Given an MCMC algorithm, an energy function, and a way to enumerate states, the checker:
 
-1. **Discovers the state space** by BFS from a seed state: all states reachable by the algorithm from that seed are found automatically.
+1. **Enumerates states by BFS.** Starting from a seed state, it exhaustively runs the algorithm on every possible sequence of random bits, discovering all reachable states automatically.
 
-2. **Checks detailed balance exactly** — constructs the symbolic transition matrix and verifies T(i→j)·π(i) = T(j→i)·π(j) for every pair using `FullSimplify` with β > 0. Both β and all energy parameters are kept symbolic. The result is an exact PASS or FAIL.
+2. **Constructs the exact transition matrix.** Each entry T(i→j) is computed as the sum of path weights (products of 1/2 per fair bit and acceptance probability per Metropolis step) over all bit sequences that take state i to state j.
 
-3. **Runs a numerical MCMC simulation** with genuine random numbers and compares the visited-state histogram to the Boltzmann distribution (KL divergence).
+3. **Checks detailed balance symbolically.** For every pair (i, j), verifies T(i→j)·e^{−β·E(i)} = T(j→i)·e^{−β·E(j)} using `FullSimplify` with β > 0 and all energy parameters treated as real symbols. The result is an exact PASS or FAIL — no floating-point approximation.
 
-Results are printed as a table in the terminal, one row per distinct connected component found.
+4. **Validates numerically.** Runs a genuine MCMC simulation and compares the visited-state histogram to the Boltzmann distribution using the KL divergence. A low KL divergence (< 0.02) is a PASS.
+
+The symbolic check is rigorous; the numerical check is a useful sanity check but can give false PASSes (e.g. on flat energy landscapes where any ergodic algorithm gives a uniform histogram).
 
 ---
 
-## How to run
+## Running the checker
 
 ```bash
 cd ~/Desktop/DetailedBalanceChecker
 
-# Test all bit strings of length 1–4 (both symbolic and numerical)
-wolframscript -file check.wls examples2/kawasaki_1d_swap_pass.wl MaxBits=4
+# 1D Kawasaki (all L=1,2,3,4 systems), symbolic + numerical
+wolframscript -file check.wls examples3/kawasaki_1d.wl MaxBitString=1111111
 
-# 2D example needs bit strings of length 9 (3×3 grid)
-wolframscript -file check.wls examples2/kawasaki_2d_pass.wl MaxBits=9
+# 2D Kawasaki (L=1 and L=2 tori), symbolic only (faster)
+wolframscript -file check.wls examples3/kawasaki_2d.wl MaxBitString=1111111 Mode=Symbolic
 
-# Symbolic only (faster, no MCMC)
-wolframscript -file check.wls examples2/kawasaki_1d_drift_fail.wl MaxBits=4 Mode=Symbolic
-
-# Options
-wolframscript -file check.wls examples2/kawasaki_2d_fail.wl MaxBits=9 NSteps=100000
+# Failure examples
+wolframscript -file check.wls examples3/kawasaki_1d_fail.wl MaxBitString=1111111
+wolframscript -file check.wls examples3/kawasaki_2d_fail.wl MaxBitString=1111111 Mode=Symbolic
 ```
 
-**Options** (key=value, no spaces around `=`):
+**Options** (`key=value`, no spaces around `=`):
 
 | Option | Default | Description |
 |---|---|---|
-| `MaxBits=N` | 8 | Test bit strings of length 1 through N |
-| `Mode=Symbolic` | Both | Symbolic DB check only |
-| `Mode=Numerical` | Both | Numerical MCMC only |
-| `Mode=Both` | Both | Both checks |
-| `NSteps=N` | 50000 | MCMC steps per tested system |
-| `MaxBitDepth=N` | 20 | BFS tree depth cap per state |
-| `Verbose=True` | False | Print per-state BFS progress |
+| `MaxBitString=XXXX` | `11111111` | Test all bit strings from length 1 up through `len(XXXX)`, stopping at `XXXX` within the final length. Leading zeros are significant. |
+| `Mode=Symbolic` | `Both` | Symbolic detailed-balance check only |
+| `Mode=Numerical` | `Both` | Numerical MCMC check only |
+| `Mode=Both` | `Both` | Both checks |
+| `NSteps=N` | `50000` | MCMC steps per tested component |
+| `MaxBitDepth=N` | `20` | BFS tree depth cap per state |
+| `Verbose=True` | `False` | Print per-state BFS progress |
+
+### How MaxBitString determines which systems are tested
+
+The checker iterates every bit string from length 1 up to and including `MaxBitString`, in order of increasing length then numerically within each length. For each bit string it calls `BitsToState` (defined in your `.wl` file) to get a seed state. If the seed belongs to a previously-discovered connected component it is skipped (deduplication). Otherwise BFS discovers the full component and one row is printed.
+
+For the Kawasaki examples, the bijective encoding maps 7-bit strings to all L=1,2,3,4 labeled-particle arrays, so `MaxBitString=1111111` covers all those systems exhaustively.
 
 ---
 
-## How the batch interface works
+## Animating an algorithm
 
-The checker generates every bit string of length 1 through `MaxBits`, ordered by length then numerically (e.g. `0`, `1`, `00`, `01`, `10`, `11`, `000`, …).
+```bash
+wolframscript -file animate.wls examples3/kawasaki_1d.wl \
+  Sites=6 N=3 Steps=300 Beta=1 Delay=0.15
 
-For each bit string, it calls `BitsToState` (defined in the `.wl` file) to convert the bit string to a seed state. If `BitsToState` returns `None`, the string is skipped. Otherwise:
+wolframscript -file animate.wls examples3/kawasaki_2d.wl \
+  Sites=9 N=4 Steps=200 Delay=0.2
 
-1. BFS discovers all states reachable from the seed.
-2. If the seed is already in a previously-discovered connected component, it is skipped (deduplication — avoids retesting the same system).
-3. The checker runs the requested symbolic and/or numerical tests on the discovered component and prints one row.
-
-This allows exhaustive testing of all system configurations up to a given size by simply increasing `MaxBits`.
-
----
-
-## Writing an algorithm file
-
-A `.wl` file must define exactly four things:
-
-```mathematica
-energy[state_]      := ...   (* bare energy, no beta *)
-Algorithm[state_]   := ...   (* MCMC move using native random calls *)
-BitsToState[bits_]  := ...   (* {0,1,...} list -> state, or None *)
-numBeta             = ...    (* numeric inverse temperature *)
+# Supply specific coupling constants
+wolframscript -file animate.wls examples3/kawasaki_1d.wl \
+  Sites=6 N=3 J12=1.0 J13=0.5 J23=2.0
 ```
 
-Optionally, include symbolic energy parameters:
+**Options:**
 
-```mathematica
-symParams = <|"eps" -> {ε1, ε2, ...}, "couplings" -> {J1, ...}|>
-```
-
-### BitsToState
-
-`BitsToState` is the only new requirement compared to a plain seed state. It must:
-
-- Accept a list of 0s and 1s of any length.
-- Return a state that `Algorithm` and `energy` can accept, **or `None`** if the bit pattern does not correspond to a valid system configuration.
-- Be a **bijection**: different bit strings that return non-`None` should map to different states (or at least to states in distinct connected components).
-
-**Occupation-based example** (3 particles on an L-site ring, sorted-occupancy state):
-
-```mathematica
-L = 4
-BitsToState[bits_List] :=
-  If[Length[bits] =!= L || Total[bits] =!= 3, None,
-    Flatten[Position[bits, 1]]]
-(* {1,1,1,0} -> {1,2,3}   {0,1,1,1} -> {2,3,4} *)
-```
-
-**Labeled-particle example** (L sites, labels assigned left to right):
-
-```mathematica
-L = 4
-BitsToState[bits_List] :=
-  If[Length[bits] =!= L, None,
-    bits * Accumulate[bits]]
-(* {1,1,1,0} -> {1,2,3,0}   {1,0,1,1} -> {1,0,2,3} *)
-```
-
-### Rules for `energy`
-
-- Takes a state, returns a scalar (bare energy, no β).
-- Must be deterministic — no random calls.
-- May use symbolic (unassigned) parameters listed in `symParams`.
-- β must **not** appear inside `energy`; it is injected by the checker.
-
-### Rules for `Algorithm`
-
-- Takes a state, returns a new state (or the same state to stay put).
-- Uses `RandomInteger[]`, `RandomReal[]`, and/or `RandomChoice[]` for all randomness.
-- Use `MetropolisProb[dE]` for the Metropolis acceptance probability:
-  ```mathematica
-  MetropolisProb[dE] = Piecewise[{{1, dE ≤ 0}, {Exp[-β dE], dE > 0}}]
-  ```
-  β remains symbolic during tree-building; the checker assigns it numerically for MCMC.
-
-### Supported random calls
-
-| Call | Behaviour during BFS |
-|---|---|
-| `RandomReal[]` | deferred token; fires as accept/reject when compared with `< p` |
-| `RandomInteger[]` or `RandomInteger[1]` | reads one bit |
-| `RandomInteger[{lo, hi}]` | reads k=⌈log₂(hi−lo+1)⌉ bits; out-of-range silently discarded |
-| `RandomInteger[n]` | reads k=⌈log₂(n+1)⌉ bits |
-| `RandomChoice[list]` | reads k=⌈log₂(n)⌉ bits |
-
-Calls that cannot be intercepted (abort): `RandomVariate`, `AbsoluteTime`, `SessionTime`, `Now`.
-
----
-
-## examples2/ — self-contained algorithm files
-
-| File | System | Expected |
+| Option | Default | Description |
 |---|---|---|
-| `kawasaki_1d_swap_pass.wl` | L=4 ring, 3 labeled particles, swap Kawasaki, pairwise coupling | **PASS** |
-| `kawasaki_1d_drift_fail.wl` | L=4 ring, 3 particles, rightward drift, flat energy | **FAIL** (symbolic), PASS (numerical) |
-| `kawasaki_2d_pass.wl` | 3×3 torus, 3 particles, standard Kawasaki | **PASS** |
-| `kawasaki_2d_fail.wl` | 3×3 torus, 3 particles, unbalanced particle selection | **FAIL** |
-
-**`kawasaki_1d_swap_pass.wl`** — True Kawasaki swap: pick a random bond; if both sites are occupied, exchange the two particle labels and apply Metropolis. State = length-4 list of particle labels (0 = empty). With 3 labeled particles and pure swap moves the hole never moves, so each hole position forms a separate connected component of 6 states (3! label permutations). `BitsToState` assigns labels 1, 2, 3, … to occupied sites left to right. With `MaxBits=4`, four connected components are tested (one per hole position), all PASS.
-
-**`kawasaki_1d_drift_fail.wl`** — Deterministic rightward current on the sorted-occupancy representation. Energy is flat (= 0), so the Boltzmann distribution is uniform and KL ≈ 0 for any algorithm (numerical PASS). The symbolic check detects the persistent current (T(i→j) = 1, T(j→i) = 0 for each cyclic pair) and reports FAIL. Demonstrates that the numerical check is necessary but not sufficient.
-
-**`kawasaki_2d_pass.wl`** — Standard Kawasaki on a 3×3 torus with rational site energies. Pick a random particle (rejection sampling over 3), pick a random direction (N/S/E/W), apply Metropolis. With 84 reachable states the symbolic check requires a few minutes; most state pairs have T = 0 trivially. With `MaxBits=9`, the checker finds the first valid 9-bit string with 3 ones, discovers all 84 states, and tests the single connected component. PASS.
-
-**`kawasaki_2d_fail.wl`** — Same 2D system but with a subtly broken particle selection: an unbalanced if-tree consumes 1, 2, or 3 bits per branch. When a hop changes a particle's rank in the sorted state, the forward and backward move draw from different proposal weights, breaking detailed balance. FAIL (symbolic). The violation is small enough that the numerical check may not detect it at moderate NSteps.
+| `Sites=<n>` | required | Total lattice sites (e.g. 9 for a 3x3 grid) |
+| `N=<n>` | required | Number of labeled particles (types 1..N) |
+| `Steps=<n>` | `200` | Number of MCMC steps to animate |
+| `Beta=<f>` | from `.wl` file | Inverse temperature |
+| `Delay=<f>` | `0.1` | Seconds per frame |
+| `J<a><b>=<f>` | random | Set coupling constant between types a and b |
 
 ---
 
-## How it works internally
+## Writing your own algorithm file
 
-The algorithm is called with native Mathematica random functions (`RandomInteger[]`, `RandomReal[]`, etc.), which are intercepted during BFS. Each call is replaced by a deterministic value from a bit tape, making the algorithm's execution path fully reproducible.
+Copy `template.wl` and fill in the four required definitions. All four live in a single self-contained `.wl` file.
 
-- `RandomInteger[]` or `RandomInteger[1]` — reads one bit; contributes ½ to path weight.
-- `RandomReal[] < p` — reads one bit; contributes p (accept) or 1−p (reject) to path weight.
-- T(i→j) = **sum of path weights** over all bit sequences taking state i to state j.
+### Required: `energy[state_]`
+
+Bare energy (no beta). Must be deterministic. May use symbolic variables declared in `symParams` or `DynamicSymParams`.
+
+### Required: `Algorithm[state_]`
+
+MCMC move. Use native Mathematica random calls: `RandomInteger[]`, `RandomReal[]`, `RandomChoice[]`. Use `MetropolisProb[dE]` for Metropolis acceptance:
+
+```mathematica
+If[RandomReal[] < MetropolisProb[dE], newState, state]
+```
+
+The checker intercepts these calls during BFS, replacing them with deterministic values from a bit tape. `MetropolisProb[dE]` expands to `Piecewise[{{1, dE<=0}, {Exp[-beta*dE], dE>0}}]` with beta kept symbolic.
+
+**Supported random calls:**
+
+| Call | Bits consumed |
+|---|---|
+| `RandomReal[]` | 1 (deferred until compared with `< p`) |
+| `RandomInteger[{lo, hi}]` | ceil(log2(hi-lo+1)) bits |
+| `RandomInteger[]` or `RandomInteger[1]` | 1 bit |
+| `RandomChoice[list]` | ceil(log2(n)) bits |
+
+Out-of-range rejection-sampling paths are silently discarded; the missing probability is uniform across all states, so detailed balance is still checked correctly.
+
+### Required: `BitsToState[bits_List]`
+
+Converts a bit string to a seed state, or returns `None` to skip it.
+
+```mathematica
+(* Simple example: 4-site ring, exactly 2 particles *)
+L = 4
+BitsToState[bits_List] :=
+  If[Length[bits] =!= L || Total[bits] =!= 2, None,
+    Flatten[Position[bits, 1]]]
+```
+
+### Required: `numBeta`
+
+```mathematica
+numBeta = 1
+```
+
+### Optional: symbolic parameters
+
+**Static** (same for every component):
+```mathematica
+symParams = <|"eps" -> {eps1, eps2}, "couplings" -> {J12, J13}|>
+```
+
+**Dynamic** (auto-generated per component from the discovered states). Use this when parameters depend on which particle types are present — no hardcoded limit needed:
+```mathematica
+DynamicSymParams[states_List] :=
+  Module[{types = Sort[DeleteCases[Union @@ states, 0]]},
+    <|"couplings" ->
+      Flatten @ Table[
+        If[a < b, ToExpression["J" <> ToString[a] <> ToString[b]], Nothing],
+        {a, types}, {b, types}]|>]
+```
+
+Both may be defined simultaneously; their parameter lists are merged. You can declare any symbolic quantities your energy uses: second-order couplings, particle masses, friction coefficients, time steps, spring constants, etc. The checker keeps them symbolic during the exact check and assigns random numeric values for the MCMC run.
+
+### Optional: `DisplayState[state_]`
+
+If defined, replaces `ToString[state]` in the output table. For 2D states:
+```mathematica
+DisplayState[state_List] :=
+  With[{L = Round[Sqrt[Length[state]]]},
+    StringJoin @ Riffle[
+      Table["{" <> StringRiffle[ToString /@ state[[(r-1)*L+1 ;; r*L]], ","] <> "}",
+            {r, 1, L}], "|"]]
+(* {1,2,3,0} -> "{1,2}|{3,0}" *)
+```
 
 ---
 
-## Practical limits
+## Examples
 
-- **States**: discovered automatically; keep to ≤ 15–20 for fast results. The 2D example with 84 states is feasible (most pairs are non-adjacent and resolve immediately).
-- **Bit depth**: `MaxBitDepth=20` covers most algorithms.
-- **FullSimplify**: the most expensive step. With symbolic energy parameters, PiecewiseExpand resolves Metropolis conditions branch-by-branch using exact algebra.
-- **Flat-energy caveat**: if all energies are equal the Boltzmann distribution is uniform, so KL ≈ 0 for any algorithm — even non-reversible ones. The symbolic DB check catches this; the numerical check is uninformative on flat landscapes.
+| File | System | Result |
+|---|---|---|
+| `examples3/kawasaki_1d.wl` | 1D ring, labeled particles, dynamic L | **PASS** |
+| `examples3/kawasaki_2d.wl` | 2D torus, labeled particles, dynamic L | **PASS** |
+| `examples3/kawasaki_1d_fail.wl` | Same as 1D but bond 0 proposed twice as often | **FAIL** |
+| `examples3/kawasaki_2d_fail.wl` | Same as 2D but bond 0 proposed twice as often | **FAIL** |
+
+The failure examples differ from the correct ones by exactly one line:
+
+```mathematica
+(* Correct *)    b = RandomInteger[{0, L - 1}]
+(* Buggy   *)    b = Mod[RandomInteger[{0, L}], L]   (* bond 0 has double weight *)
+```
+
+Drawing from `{0,...,L}` and wrapping the extra value back to bond 0 means bond 0 is proposed with probability 2/(L+1) while all other bonds have probability 1/(L+1). This asymmetry creates a persistent current that the symbolic checker detects.
+
+---
+
+## Checking your own algorithm
+
+The checker is completely agnostic to the algorithm type. To check a custom algorithm:
+
+1. Copy `template.wl`.
+2. Implement `energy[state_]` for your system.
+3. Implement `Algorithm[state_]` using `RandomInteger`, `RandomReal`, `RandomChoice`, and `MetropolisProb`.
+4. Implement `BitsToState[bits_]` to enumerate the configurations you want to test.
+5. Declare symbolic parameters in `symParams` or `DynamicSymParams`.
+
+The state can be any Mathematica expression — a list, an association, a matrix. The checker only requires that the algorithm accepts and returns the same type, and that BitsToState returns the same type.
+
+For a **discretised molecular dynamics** integrator (where, say, one lattice dimension represents velocity or momentum): the state is just a list of integers. The Metropolis accept/reject step is handled identically. Symbolic parameters like mass `m`, timestep `dt`, and friction `gamma` go in `symParams`.
+
+---
+
+## Limitations
+
+- **State space size.** BFS discovers the full connected component. Keep components to ~20 states for fast symbolic checks; larger (e.g. 84 states) is feasible but slow.
+- **Random call types.** `RandomVariate`, `AbsoluteTime`, `SessionTime`, and `Now` cannot be intercepted and cause an error row in the output.
+- **Flat-energy caveat.** If all energies are equal, the Boltzmann distribution is uniform so the numerical check gives PASS for any ergodic algorithm. The symbolic check is not affected.
+- **Numerical coupling range.** Random coupling values are drawn from (-1, 1). If your algorithm is only stable for specific parameter ranges, the numerical check may give misleading results; trust the symbolic check.
 
 ---
 
 ## Files
 
 ```
-dbc_core.wl                   Core library
-check.wls                     Terminal interface (batch bit-string mode)
-show_report.py                Python/matplotlib report renderer (legacy)
-examples2/
-  kawasaki_1d_swap_pass.wl    L=4 ring, 3 labeled particles, swap     [PASS]
-  kawasaki_1d_drift_fail.wl   L=4 ring, 3 particles, rightward drift  [FAIL / num-PASS]
-  kawasaki_2d_pass.wl         3x3 torus, 3 particles, Kawasaki        [PASS]
-  kawasaki_2d_fail.wl         3x3 torus, 3 particles, unbalanced tree [FAIL]
-examples/                     Legacy examples (old format, unsupported)
+check.wls               Checker entry point
+animate.wls             Terminal animation of algorithm execution
+template.wl             Template for writing an algorithm file
+dbc_core.wl             Core library (BFS, symbolic check, MCMC check)
+examples3/
+  kawasaki_1d.wl        1D Kawasaki, dynamic L, labeled particles   [PASS]
+  kawasaki_2d.wl        2D Kawasaki, dynamic L, labeled particles   [PASS]
+  kawasaki_1d_fail.wl   Same with bond-0 bias                       [FAIL]
+  kawasaki_2d_fail.wl   Same with bond-0 bias                       [FAIL]
+legacy/
+  examples/             Old example format (unsupported)
+  examples2/            Fixed-L examples (superseded by examples3/)
 ```

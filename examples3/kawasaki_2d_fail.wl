@@ -1,33 +1,24 @@
 (* ================================================================
-   2D Kawasaki dynamics on a periodic square lattice -- PASSES
+   2D Kawasaki with bond-0 bias -- FAILS detailed balance
    ================================================================
 
-   State:   flat array of length L^2 (row-major).
-            State[[s]] = 0 (empty) or k ∈ {1,...,N} (labeled particle).
-            L is inferred as Sqrt[Length[state]]; only IDs whose decoded
-            array has perfect-square length are accepted by BitsToState.
+   Identical to kawasaki_2d.wl except for one line in Algorithm:
 
-   Encoding: same bijective integer map as kawasaki_1d.wl.
-             BitsToState additionally filters to perfect-square lengths.
+     CORRECT:  b = RandomInteger[{0, 2*L*L - 1}]
+     BUGGY:    b = Mod[RandomInteger[{0, 2*L*L}], 2*L*L]
 
-   Site numbering (row-major, 1-indexed):
-     1  2  ... L
-     L+1 ...  2L
-     ...
-     (L-1)L+1 ... L^2
+   The buggy version draws from {0,...,2L^2} (one extra value) and
+   wraps the overflow back to bond 0. Bond 0 (site 1 → its right
+   neighbour) is therefore proposed with probability 2/(2L^2+1) while
+   every other bond has probability 1/(2L^2+1).
 
-   Move:    Enumerate 2L^2 directed bonds: bonds 0..L^2-1 are horizontal
-            (site s → right neighbour), bonds L^2..2L^2-1 are vertical
-            (site s → down neighbour). Each physical bond appears in both
-            directions, so the proposal is symmetric. Pick b uniformly
-            from {0,...,2L^2-1}; swap the two sites; apply Metropolis.
-
-   Energy:  Same nearest-neighbour pairwise J_ab coupling as kawasaki_1d.wl,
-            summed over all L^2 horizontal and L^2 vertical bonds.
+   This asymmetry creates a net current along the bond connecting
+   site 1 to its right neighbour, which the symbolic checker detects
+   as a detailed-balance violation.
    ================================================================ *)
 
 
-(* ---- Bijective integer encoding (identical to kawasaki_1d.wl) ----------- *)
+(* ---- Encoding and lattice helpers (identical to kawasaki_2d.wl) --------- *)
 
 $cL[L_]       := $cL[L]    = Sum[Binomial[L, k] * k!, {k, 0, L}]
 $cLPre[L_]    := $cLPre[L] = Sum[$cL[l], {l, 0, L - 1}]
@@ -63,23 +54,13 @@ $decode[id_Integer] :=
     arr  = ConstantArray[0, L];
     Do[arr[[pos[[i]] + 1]] = perm[[i]], {i, N}]; arr]
 
-
-(* ---- 2D lattice helpers -------------------------------------------------- *)
-
-(* Right and down neighbours of site s on an L x L torus *)
 $right2D[s_, L_] := With[{r = Ceiling[s/L], c = Mod[s-1,L]+1}, (r-1)*L + Mod[c,L] + 1]
 $down2D[s_, L_]  := With[{r = Ceiling[s/L], c = Mod[s-1,L]+1}, Mod[r,L]*L + c]
 
-(* Sites connected by directed bond b:
-   b < L^2  → horizontal bond at site b+1
-   b >= L^2 → vertical bond at site b-L^2+1 *)
 $bond2D[L_, b_] :=
   If[b < L*L,
     {b+1, $right2D[b+1, L]},
     With[{s = b - L*L + 1}, {s, $down2D[s, L]}]]
-
-
-(* ---- Coupling constants -------------------------------------------------- *)
 
 $pairJ[a_, b_] :=
   If[a == 0 || b == 0, 0,
@@ -92,10 +73,6 @@ DynamicSymParams[states_List] :=
         If[a < b, ToExpression["J" <> ToString[a] <> ToString[b]], Nothing],
         {a, types}, {b, types}]|>]
 
-
-(* ---- Energy -------------------------------------------------------------- *)
-
-(* Sum J_ab over all horizontal and vertical bonds of the L x L torus *)
 energy[state_List] :=
   With[{L = Round[Sqrt[Length[state]]]},
     Total[Table[
@@ -104,12 +81,12 @@ energy[state_List] :=
       {s, Length[state]}]]]
 
 
-(* ---- Algorithm ----------------------------------------------------------- *)
+(* ---- Buggy algorithm: bond 0 proposed twice as often -------------------- *)
 
 Algorithm[state_List] :=
   Module[{L, b, sites, s1, s2, newState, dE},
     L     = Round[Sqrt[Length[state]]];
-    b     = RandomInteger[{0, 2*L*L - 1}];   (* directed bond index *)
+    b     = Mod[RandomInteger[{0, 2*L*L}], 2*L*L];   (* BUG: bond 0 has double weight *)
     sites = $bond2D[L, b]; s1 = sites[[1]]; s2 = sites[[2]];
     newState = ReplacePart[state, {s1 -> state[[s2]], s2 -> state[[s1]]}];
     dE = energy[newState] - energy[state];
@@ -118,7 +95,6 @@ Algorithm[state_List] :=
 
 (* ---- Checker interface --------------------------------------------------- *)
 
-(* Accept only IDs whose decoded array has perfect-square length (L x L grid) *)
 BitsToState[bits_List] :=
   Module[{id = FromDigits[bits, 2], state, sqrtM},
     If[id == 0, Return[None]];
@@ -127,7 +103,6 @@ BitsToState[bits_List] :=
     If[!IntegerQ[sqrtM], Return[None]];
     state]
 
-(* Display state as a grid: {1,2}|{3,0} for a 2x2 state *)
 DisplayState[state_List] :=
   With[{L = Round[Sqrt[Length[state]]]},
     StringJoin @ Riffle[
