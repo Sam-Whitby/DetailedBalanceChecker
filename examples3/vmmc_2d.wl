@@ -213,14 +213,32 @@ $vmmcBuildCluster[state_, L_, seed_, dir_] :=
           eInit = $virtualPairEnergy[pType, qType, p,     q, L];  (* current bond *)
           eFwd  = $virtualPairEnergy[pType, qType, pPost, q, L]; (* fwd virtual  *)
           eRev  = $virtualPairEnergy[pType, qType, pRev,  q, L]; (* rev virtual  *)
-          (* Link weights: positive when the bond weakens (energy rises) *)
-          wFwd  = Max[1.0 - Exp[eInit - eFwd], 0.0];
-          wRev  = Max[1.0 - Exp[eInit - eRev], 0.0];
+          (* Link weights as Piecewise (not Max) so the symbolic checker's
+             FullSimplify can resolve each sign-case of J independently.
+             Max[1-Exp[x],0] is equivalent but opaque to FullSimplify for
+             unknown-sign symbolic x; Piecewise exposes the case structure. *)
+          wFwd = Piecewise[{{1 - Exp[eInit - eFwd], eInit < eFwd}}, 0];
+          wRev = Piecewise[{{1 - Exp[eInit - eRev], eInit < eRev}}, 0];
           r1 = RandomReal[];
           If[r1 <= wFwd,
-            (* A link is attempted; determine whether it is frustrated *)
+            (* A link is attempted; determine whether it is frustrated.
+               The ratio wRev/wFwd is expressed as a Piecewise for two reasons:
+               (1) Avoids 0/0 (Indeterminate) when wFwd = 0: the Piecewise
+                   else-branch returns 0 instead of dividing.  Without this,
+                   the symbolic checker's acceptTest receives Indeterminate,
+                   which corrupts path weights even for zero-probability paths.
+               (2) Min[..., 1] clamps to [0,1]: if wRev > wFwd (e.g. the
+                   reverse virtual move collides with a hard sphere while the
+                   forward does not), the raw ratio exceeds 1 and acceptTest
+                   would assign negative weight to the frustration branch.
+                   Clamping gives ratio = 1, making r2 > 1 impossible, so
+                   the particle is always recruited — the correct behaviour. *)
             r2 = RandomReal[];
-            If[r2 > wRev/wFwd,
+            If[r2 > Piecewise[{
+                  {Min[(1 - Exp[eInit - eRev]) / (1 - Exp[eInit - eFwd]), 1],
+                   eInit < eFwd && eInit < eRev},
+                  {0, eInit < eFwd}},
+                0],
               (* Frustrated: forward link forms but reverse does not → reject *)
               frustrated = True; Break[],
               (* Genuine link: recruit q, continue BFS from q *)
