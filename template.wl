@@ -1,21 +1,23 @@
 (* ================================================================
-   template.wl  --  Minimal template for the detailed-balance checker
+   template.wl  --  Template for the detailed-balance checker
    ================================================================
-   Copy this file, fill in the four required definitions, and run:
+   Copy this file, fill in the required definitions, and run:
 
      wolframscript -file check.wls your_algorithm.wl MaxBitString=<bits>
+     wolframscript -file report.wls your_algorithm.wl BitString=<bits>
 
    REQUIRED:  energy, Algorithm, BitsToState, numBeta
-   OPTIONAL:  symParams or DynamicSymParams (for symbolic parameters)
-              DisplayState (for custom state display in output)
+   OPTIONAL:  DynamicSymParams or symParams  (symbolic energy parameters)
+              DisplayState                   (custom state display)
+              ValidStateIDs                  (fast enumeration of valid seeds)
    ================================================================ *)
 
 
 (* ---- Energy function ---------------------------------------------------- *)
 (*
-   Takes a state, returns the bare energy (a real number, no beta).
+   Return the bare energy of state (a real number, no β factor).
    Must be deterministic -- no random calls.
-   May use symbolic variables listed in symParams or DynamicSymParams.
+   May reference symbolic variables declared in symParams / DynamicSymParams.
 *)
 energy[state_] :=
   0   (* replace with your energy *)
@@ -23,15 +25,21 @@ energy[state_] :=
 
 (* ---- MCMC algorithm ------------------------------------------------------- *)
 (*
-   Takes a state, returns the next state.
+   Take a state, return the next state (same type).
    Use native Mathematica random calls: RandomInteger[], RandomReal[],
-   RandomChoice[]. For Metropolis acceptance, use exactly:
+   RandomChoice[].
+
+   For Metropolis acceptance use exactly:
 
      If[RandomReal[] < MetropolisProb[dE], newState, state]
 
-   MetropolisProb[dE] is defined by the checker as:
-     Piecewise[{{1, dE<=0}, {Exp[-beta*dE], dE>0}}]
-   with beta kept symbolic during the symbolic check.
+   where dE = energy[newState] - energy[state].
+   MetropolisProb[dE] is intercepted by the checker; symbolically it acts as:
+
+     Piecewise[{{1, dE <= 0}, {Exp[-\[Beta]*dE], dE > 0}}]
+
+   with \[Beta] kept as a free symbol during the symbolic check so that the
+   Boltzmann factor cancels algebraically in the detailed-balance ratio.
 *)
 Algorithm[state_] :=
   state   (* replace with your algorithm *)
@@ -39,50 +47,46 @@ Algorithm[state_] :=
 
 (* ---- Symbolic energy parameters (optional) ------------------------------ *)
 (*
-   Option A -- static parameters (same for every connected component):
+   Declare any symbolic coupling constants or site energies here so the
+   checker can treat them as free symbols during FullSimplify and assign
+   random numeric values for the numerical MCMC check.
+
+   Option A -- static parameters (the same for every connected component):
 
      symParams = <|"eps" -> {eps1, eps2}, "couplings" -> {J1, J2}|>
 
-   Option B -- dynamic parameters (auto-generated per component, e.g.
-   Kawasaki coupling constants that depend on which particle types
-   are present):
+   Option B -- dynamic parameters (generated per component from particle types
+   actually present, e.g. for systems where the relevant J symbols change
+   depending on which species are in the component):
 
-     DynamicSymParams[states_List] :=
-       <|"couplings" -> ... symbols derived from states ...|>
-
-   Both options may be used together. If neither is defined, the
-   checker treats the energy as fully numeric.
-
-   Parameters declared here are kept symbolic during the symbolic
-   check (FullSimplify with beta > 0) and assigned random numeric
-   values for the MCMC check.
-
-   Example for a 2-particle Kawasaki system:
      DynamicSymParams[states_List] :=
        Module[{types = Sort[DeleteCases[Union @@ states, 0]]},
          <|"couplings" ->
            Flatten @ Table[
              If[a < b, ToExpression["J" <> ToString[a] <> ToString[b]], Nothing],
              {a, types}, {b, types}]|>]
+
+   Both may be used together.  If neither is defined the energy is treated as
+   fully numeric (symbolic check is skipped for any component whose energy
+   evaluates to a number without extra symbols).
 *)
 
 
 (* ---- BitsToState --------------------------------------------------------- *)
 (*
-   Converts a bit string (list of 0s and 1s) to a seed state for the
-   checker, or returns None to skip this bit string.
+   Convert a bit string (list of 0s and 1s) to a seed state, or return None
+   to skip this bit string.  The checker calls BitsToState for every bit
+   string up to MaxBitString, then uses BFS from the returned seed to discover
+   the full connected component automatically.
 
-   The checker calls BitsToState for every bit string from length 1 up
-   to MaxBitString, in order of increasing length. It uses BFS from the
-   returned state to discover the full connected component automatically.
-
-   Requirements:
-   - Accept a list of any length; return None for invalid patterns.
+   Guidelines:
+   - Accept lists of any length; return None for patterns that don't
+     correspond to a valid state (wrong length, impossible configuration, etc.).
    - Different bit strings that return non-None should map to states in
-     different connected components (to avoid redundant work).
-   - The state must be accepted by both energy and Algorithm.
+     DIFFERENT connected components, to avoid redundant BFS work.
+   - The returned state must be accepted by both energy and Algorithm.
 
-   Simple example: 4-site ring, state = list of site occupancies (0/1)
+   Simple example: fixed 4-site ring, state = list of occupancies {0,1}
      BitsToState[bits_List] :=
        If[Length[bits] =!= 4, None, bits]
 
@@ -96,6 +100,13 @@ BitsToState[bits_List] :=
 
 
 (* ---- Inverse temperature ------------------------------------------------ *)
+(*
+   Numeric value of β = 1/(k_B T) used for:
+     - the numerical MCMC check (RunNumericalMCMCAT)
+     - the Boltzmann weights the MCMC distribution is compared against
+   The symbolic check uses \[Beta] as a free symbol regardless of numBeta.
+   Set to 1 unless you have a specific reason to use a different value.
+*)
 numBeta = 1
 
 
@@ -109,4 +120,22 @@ numBeta = 1
          StringJoin @ Riffle[
            Table["{" <> StringRiffle[ToString /@ state[[(r-1)*L+1 ;; r*L]], ","] <> "}",
                  {r, 1, L}], "|"]]
+*)
+
+
+(* ---- ValidStateIDs (optional optimisation) ------------------------------ *)
+(*
+   If defined, check.wls calls ValidStateIDs[maxId] instead of exhaustively
+   iterating every bit string from 1 to maxId.  Return the list of integer IDs
+   (in the same bijective encoding used by BitsToState) that actually decode to
+   valid seed states.  This can dramatically reduce pre-check overhead when only
+   a small fraction of bit strings map to valid states.
+
+   Example: 2D algorithms where valid states have perfect-square length (L×L):
+     ValidStateIDs[maxId_Integer] :=
+       Module[{L = 1, ids = {}},
+         While[$cLPre[L^2] <= maxId,
+           ids = Join[ids, Range[$cLPre[L^2], Min[$cLPre[L^2 + 1] - 1, maxId]]];
+           L++];
+         ids]
 *)
